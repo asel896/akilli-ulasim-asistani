@@ -1,0 +1,15 @@
+# Python sanal ortamı ve önbellek
+.venv/
+__pycache__/
+*.pyc
+
+# Gizli ayarlar
+.env
+.env.*
+!.env.example
+
+# İndirilen veriler ve inceleme dosyaları
+veriler/
+hat_2A.json
+hat_adresleri.json
+hat_sayfasi.html
