@@ -3,7 +3,16 @@
 CREATE TABLE hatlar (
     hat_kodu VARCHAR(30) PRIMARY KEY,
     hat_adi TEXT NOT NULL,
-    slug TEXT NOT NULL UNIQUE
+    slug TEXT NOT NULL UNIQUE,
+    kaynak_aktif BOOLEAN,
+    kaynak_kategori TEXT,
+    hizmet_turu TEXT NOT NULL DEFAULT 'belirsiz',
+
+
+    CONSTRAINT hatlar_hizmet_turu_kontrol
+        CHECK (
+            hizmet_turu IN ('ring', 'gorevli', 'belirsiz')
+        )
 );
 
 CREATE TABLE duraklar (
