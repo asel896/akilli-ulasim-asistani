@@ -1,3 +1,4 @@
+from db import baglanti_ac
 import json
 import os
 import traceback
@@ -15,15 +16,7 @@ if not dosyalar:
     raise SystemExit("veriler klasöründe JSON dosyası bulunamadı.")
 
 try:
-    with psycopg.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        connect_timeout=10,
-        client_encoding="UTF8"
-    ) as baglanti:
+    with baglanti_ac() as baglanti:
 
         with baglanti.cursor() as imlec:
             for dosya in dosyalar:

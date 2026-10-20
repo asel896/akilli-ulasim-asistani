@@ -1,5 +1,5 @@
 # kaynak dosyalarla vt arasindaki farklari kontrol et
-
+from db import baglanti_ac
 import json
 import os
 from pathlib import Path
@@ -28,15 +28,7 @@ for dosya in sorted((klasor / "veriler").glob("*.json")):
                 nokta["longitude"]
             )
 
-with psycopg.connect(
-    host=os.getenv("DB_HOST"),
-    port=os.getenv("DB_PORT"),
-    dbname=os.getenv("DB_NAME"),
-    user=os.getenv("DB_USER"),
-    password=os.getenv("DB_PASSWORD"),
-    client_encoding="UTF8",
-    connect_timeout=10
-) as baglanti:
+with baglanti_ac() as baglanti:
 
     with baglanti.cursor() as imlec:
         imlec.execute("SELECT guzergah_id FROM guzergahlar")
