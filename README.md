@@ -27,6 +27,10 @@ uygulama henüz tamamlanmamıştır.
 | Benzersiz durak kodu | 3.820 |
 | Hat, yön ve sıra bazında durak kaydı | 10.323 |
 | Aynı kodda farklı ad veya koordinat bulunan durak | 0 |
+| Güzergâh varyantı | 211 |
+| Güzergâh koordinat noktası | 110.069 |
+| Kaynakla karşılaştırmada eksik veya fazla nokta | 0 |
+| Kaynakla koordinatı farklı nokta | 0 |
 
 37 hattın dönüş durak listesi boştur. Bunların 36'sında kaynak güzergâh
 başlığı RİNG, 100 kodlu hatta ise GÖREVLİ olarak tanımlanmıştır.
@@ -96,6 +100,9 @@ Komutları proje klasöründe, aşağıdaki sırayla çalıştırın:
 .\.venv\Scripts\python.exe -X utf8 yon_kontrol.py
 .\.venv\Scripts\python.exe -X utf8 durak_tutarlilik.py
 .\.venv\Scripts\python.exe -X utf8 veri_aktar.py
+.\.venv\Scripts\python.exe -X utf8 hat_bilgileri_guncelle.py
+.\.venv\Scripts\python.exe -X utf8 guzergah_aktar.py
+.\.venv\Scripts\python.exe -X utf8 guzergah_kontrol.py
 ```
 
 İndirilen dosyalar `veriler/` klasöründe tutulur ve GitHub'a yüklenmez.
@@ -109,6 +116,13 @@ Veri toplama kodları kaynak sitenin mevcut yapısına bağlıdır.
 - `hatlar`: Hat kodu, adı ve sayfa kimliği.
 - `duraklar`: Durak kodu, adı ve koordinatları.
 - `hat_duraklar`: Hatların yönlere göre sıralı durak ilişkileri.
+- `guzergahlar`: Hatların güzergâh varyantları, kaynak yönleri ve diğer güzergâh bilgileri.
+- `guzergah_noktalari`: Her güzergâhın sıralı koordinat noktaları.
+
+Hatların kaynak aktiflik ve kategori bilgileri de saklanmaktadır.
+Güzergâh başlıklarına göre 36 hat ring, 1 hat görevli olarak
+sınıflandırılmış; diğer 87 hat belirsiz bırakılmıştır.
+Bu sınıflandırma, yolcu kullanımına uygunluk doğrulaması değildir.
 
 Aynı durak, bir güzergâhta farklı sıralarda tekrar bulunabilir.
 
