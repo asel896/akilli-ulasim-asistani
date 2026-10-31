@@ -330,233 +330,238 @@ def gun_sec():
     return gun_eslesmeleri.get(metni_normalize_et(girilen_gun))
 
 
-cumle = input("Nereden nereye gitmek istiyorsun? ")
+def komut_satiri_calistir():
+    cumle = input("Nereden nereye gitmek istiyorsun? ")
 
-try:
-    adresler = adresleri_coz(cumle)
+    try:
+        adresler = adresleri_coz(cumle)
 
-    baslangic_yeri = adresler.get("baslangic")
-    hedef_yeri = adresler.get("hedef")
+        baslangic_yeri = adresler.get("baslangic")
+        hedef_yeri = adresler.get("hedef")
 
-    print(f"\nAnlaşılan başlangıç: {baslangic_yeri or 'Belirtilmedi'}")
-    print(f"Anlaşılan hedef: {hedef_yeri or 'Belirtilmedi'}")
+        print(f"\nAnlaşılan başlangıç: {baslangic_yeri or 'Belirtilmedi'}")
+        print(f"Anlaşılan hedef: {hedef_yeri or 'Belirtilmedi'}")
 
-    baslangic_duraklari = durak_ara(baslangic_yeri)
-    hedef_duraklari = durak_ara(hedef_yeri)
+        baslangic_duraklari = durak_ara(baslangic_yeri)
+        hedef_duraklari = durak_ara(hedef_yeri)
 
-    if not baslangic_duraklari:
-        print("\nBaşlangıç için eşleşen durak bulunamadı.")
-    elif not hedef_duraklari:
-        print("\nHedef için eşleşen durak bulunamadı.")
-    else:
-        dogrudan_hatlar = dogrudan_hatlari_bul(
-            baslangic_duraklari,
-            hedef_duraklari
-        )
-
-        if dogrudan_hatlar:
-            print("\nDoğrudan hat seçenekleri:")
-
-            for sira, hat in enumerate(dogrudan_hatlar, start=1):
-                (
-                    hat_kodu,
-                    hat_adi,
-                    yon,
-                    ilk_sira,
-                    son_sira,
-                    baslangic_kodu,
-                    hedef_kodu,
-                    baslangic_durak_adi,
-                    hedef_durak_adi,
-                    durak_araligi
-                ) = hat
-
-                durak_sayisi = son_sira - ilk_sira + 1
-
-                print(
-                    f"{sira}. Hat {hat_kodu} | {hat_adi} | "
-                    f"{yon} | {durak_sayisi} durak"
-                )
-                print(
-                    f"   Biniş: {baslangic_durak_adi} "
-                    f"→ İniş: {hedef_durak_adi}"
-                )
-
-            secim = int(
-                input("\nGitmek istediğin hat seçeneğinin numarası: ")
-            )
-
-            if secim < 1 or secim > len(dogrudan_hatlar):
-                print("Geçersiz seçenek numarası.")
-            else:
-                hat = dogrudan_hatlar[secim - 1]
-
-                (
-                    hat_kodu,
-                    hat_adi,
-                    yon,
-                    ilk_sira,
-                    son_sira,
-                    baslangic_kodu,
-                    hedef_kodu,
-                    baslangic_durak_adi,
-                    hedef_durak_adi,
-                    durak_araligi
-                ) = hat
-
-                secilen_hattin_duraklarini_yazdir(
-                    hat_kodu,
-                    hat_adi,
-                    yon,
-                    ilk_sira,
-                    son_sira
-                )
-
-                gun = gun_sec()
-
-                if not gun:
-                    print("Gün adını listedeki biçimlerden biriyle yazmalısın.")
-                else:
-                    saatler = sefer_saatlerini_getir(hat_kodu, yon, gun)
-
-                    if saatler:
-                        print(f"\nHat {hat_kodu} için {gun} sefer saatleri:")
-
-                        for saat, aciklama in saatler:
-                            saat_metni = (
-                                saat.strftime("%H:%M")
-                                if hasattr(saat, "strftime")
-                                else str(saat)
-                            )
-                            ek_bilgi = f" ({aciklama})" if aciklama else ""
-                            print(f"  {saat_metni}{ek_bilgi}")
-
-                        if ilk_sira != 1:
-                            print(
-                                "\nNot: Bu saatler hattın başlangıç noktası "
-                                "içindir; biniş durağından geçiş saatini göstermez."
-                            )
-                    else:
-                        print(
-                            f"\nHat {hat_kodu} için {gun} günü "
-                            "sefer saati bulunmuyor."
-                        )
-
+        if not baslangic_duraklari:
+            print("\nBaşlangıç için eşleşen durak bulunamadı.")
+        elif not hedef_duraklari:
+            print("\nHedef için eşleşen durak bulunamadı.")
         else:
-            print(
-                "\nDoğrudan hat bulunamadı. "
-                "Yakın duraklı aktarmalar aranıyor..."
-            )
-
-            aktarmali_hatlar = tek_aktarmali_hatlari_bul(
+            dogrudan_hatlar = dogrudan_hatlari_bul(
                 baslangic_duraklari,
                 hedef_duraklari
             )
 
-            if not aktarmali_hatlar:
-                print("150 metre içinde tek aktarmalı güzergâh bulunamadı.")
-            else:
-                print("\nTek aktarmalı seçenekler:")
+            if dogrudan_hatlar:
+                print("\nDoğrudan hat seçenekleri:")
 
-                for sira, secenek in enumerate(aktarmali_hatlar, start=1):
+                for sira, hat in enumerate(dogrudan_hatlar, start=1):
                     (
-                        hat1_kodu,
-                        hat1_adi,
-                        yon1,
-                        bas_sira,
-                        aktarma1_sira,
-                        bas_kodu,
-                        aktarma1_kodu,
-                        bas_adi,
-                        hat2_kodu,
-                        hat2_adi,
-                        yon2,
-                        aktarma2_sira,
-                        hedef_sira,
+                        hat_kodu,
+                        hat_adi,
+                        yon,
+                        ilk_sira,
+                        son_sira,
+                        baslangic_kodu,
                         hedef_kodu,
-                        aktarma1_adi,
-                        aktarma2_adi,
-                        yuru_mesafesi,
-                        toplam_durak_araligi
-                    ) = secenek
+                        baslangic_durak_adi,
+                        hedef_durak_adi,
+                        durak_araligi
+                    ) = hat
+
+                    durak_sayisi = son_sira - ilk_sira + 1
 
                     print(
-                        f"\n{sira}. Hat {hat1_kodu} ({yon1}): "
-                        f"{bas_adi} → {aktarma1_adi}"
+                        f"{sira}. Hat {hat_kodu} | {hat_adi} | "
+                        f"{yon} | {durak_sayisi} durak"
                     )
                     print(
-                        f"   Aktarma: {aktarma1_adi} durağından in, "
-                        f"{aktarma2_adi} durağına yaklaşık "
-                        f"{yuru_mesafesi:.0f} m yürü."
-                    )
-                    print(
-                        f"   Hat {hat2_kodu} ({yon2}): "
-                        f"{aktarma2_adi} → hedef"
+                        f"   Biniş: {baslangic_durak_adi} "
+                        f"→ İniş: {hedef_durak_adi}"
                     )
 
                 secim = int(
-                    input("\nGüzergâh seçeneğinin numarasını gir: ")
+                    input("\nGitmek istediğin hat seçeneğinin numarası: ")
                 )
 
-                if secim < 1 or secim > len(aktarmali_hatlar):
+                if secim < 1 or secim > len(dogrudan_hatlar):
                     print("Geçersiz seçenek numarası.")
                 else:
-                    secenek = aktarmali_hatlar[secim - 1]
+                    hat = dogrudan_hatlar[secim - 1]
 
                     (
-                        hat1_kodu,
-                        hat1_adi,
-                        yon1,
-                        bas_sira,
-                        aktarma1_sira,
-                        bas_kodu,
-                        aktarma1_kodu,
-                        bas_adi,
-                        hat2_kodu,
-                        hat2_adi,
-                        yon2,
-                        aktarma2_sira,
-                        hedef_sira,
+                        hat_kodu,
+                        hat_adi,
+                        yon,
+                        ilk_sira,
+                        son_sira,
+                        baslangic_kodu,
                         hedef_kodu,
-                        aktarma1_adi,
-                        aktarma2_adi,
-                        yuru_mesafesi,
-                        toplam_durak_araligi
-                    ) = secenek
+                        baslangic_durak_adi,
+                        hedef_durak_adi,
+                        durak_araligi
+                    ) = hat
 
-                    print("\nBirinci etap:")
                     secilen_hattin_duraklarini_yazdir(
-                        hat1_kodu,
-                        hat1_adi,
-                        yon1,
-                        bas_sira,
-                        aktarma1_sira
+                        hat_kodu,
+                        hat_adi,
+                        yon,
+                        ilk_sira,
+                        son_sira
                     )
 
-                    print(
-                        f"\nYürüme aktarması: {aktarma1_adi} "
-                        f"→ {aktarma2_adi} "
-                        f"(yaklaşık {yuru_mesafesi:.0f} m)"
+                    gun = gun_sec()
+
+                    if not gun:
+                        print("Gün adını listedeki biçimlerden biriyle yazmalısın.")
+                    else:
+                        saatler = sefer_saatlerini_getir(hat_kodu, yon, gun)
+
+                        if saatler:
+                            print(f"\nHat {hat_kodu} için {gun} sefer saatleri:")
+
+                            for saat, aciklama in saatler:
+                                saat_metni = (
+                                    saat.strftime("%H:%M")
+                                    if hasattr(saat, "strftime")
+                                    else str(saat)
+                                )
+                                ek_bilgi = f" ({aciklama})" if aciklama else ""
+                                print(f"  {saat_metni}{ek_bilgi}")
+
+                            if ilk_sira != 1:
+                                print(
+                                    "\nNot: Bu saatler hattın başlangıç noktası "
+                                    "içindir; biniş durağından geçiş saatini göstermez."
+                                )
+                        else:
+                            print(
+                                f"\nHat {hat_kodu} için {gun} günü "
+                                "sefer saati bulunmuyor."
+                            )
+
+            else:
+                print(
+                    "\nDoğrudan hat bulunamadı. "
+                    "Yakın duraklı aktarmalar aranıyor..."
+                )
+
+                aktarmali_hatlar = tek_aktarmali_hatlari_bul(
+                    baslangic_duraklari,
+                    hedef_duraklari
+                )
+
+                if not aktarmali_hatlar:
+                    print("150 metre içinde tek aktarmalı güzergâh bulunamadı.")
+                else:
+                    print("\nTek aktarmalı seçenekler:")
+
+                    for sira, secenek in enumerate(aktarmali_hatlar, start=1):
+                        (
+                            hat1_kodu,
+                            hat1_adi,
+                            yon1,
+                            bas_sira,
+                            aktarma1_sira,
+                            bas_kodu,
+                            aktarma1_kodu,
+                            bas_adi,
+                            hat2_kodu,
+                            hat2_adi,
+                            yon2,
+                            aktarma2_sira,
+                            hedef_sira,
+                            hedef_kodu,
+                            aktarma1_adi,
+                            aktarma2_adi,
+                            yuru_mesafesi,
+                            toplam_durak_araligi
+                        ) = secenek
+
+                        print(
+                            f"\n{sira}. Hat {hat1_kodu} ({yon1}): "
+                            f"{bas_adi} → {aktarma1_adi}"
+                        )
+                        print(
+                            f"   Aktarma: {aktarma1_adi} durağından in, "
+                            f"{aktarma2_adi} durağına yaklaşık "
+                            f"{yuru_mesafesi:.0f} m yürü."
+                        )
+                        print(
+                            f"   Hat {hat2_kodu} ({yon2}): "
+                            f"{aktarma2_adi} → hedef"
+                        )
+
+                    secim = int(
+                        input("\nGüzergâh seçeneğinin numarasını gir: ")
                     )
 
-                    print("\nİkinci etap:")
-                    secilen_hattin_duraklarini_yazdir(
-                        hat2_kodu,
-                        hat2_adi,
-                        yon2,
-                        aktarma2_sira,
-                        hedef_sira
-                    )
+                    if secim < 1 or secim > len(aktarmali_hatlar):
+                        print("Geçersiz seçenek numarası.")
+                    else:
+                        secenek = aktarmali_hatlar[secim - 1]
 
-                    print(
-                        "\nNot: Mesafe koordinatlardan yaklaşık hesaplanır. "
-                        "Aktarmalı sefer saatlerinin birbirine uygunluğu "
-                        "henüz hesaplanmıyor."
-                    )
+                        (
+                            hat1_kodu,
+                            hat1_adi,
+                            yon1,
+                            bas_sira,
+                            aktarma1_sira,
+                            bas_kodu,
+                            aktarma1_kodu,
+                            bas_adi,
+                            hat2_kodu,
+                            hat2_adi,
+                            yon2,
+                            aktarma2_sira,
+                            hedef_sira,
+                            hedef_kodu,
+                            aktarma1_adi,
+                            aktarma2_adi,
+                            yuru_mesafesi,
+                            toplam_durak_araligi
+                        ) = secenek
 
-except json.JSONDecodeError:
-    print("Gemini yanıtı beklenen JSON biçiminde gelmedi.")
-except ValueError:
-    print("Seçim alanına listedeki seçenek numarasını yazmalısın.")
-except Exception as hata:
-    print("İşlem sırasında hata oluştu:", hata)
+                        print("\nBirinci etap:")
+                        secilen_hattin_duraklarini_yazdir(
+                            hat1_kodu,
+                            hat1_adi,
+                            yon1,
+                            bas_sira,
+                            aktarma1_sira
+                        )
+
+                        print(
+                            f"\nYürüme aktarması: {aktarma1_adi} "
+                            f"→ {aktarma2_adi} "
+                            f"(yaklaşık {yuru_mesafesi:.0f} m)"
+                        )
+
+                        print("\nİkinci etap:")
+                        secilen_hattin_duraklarini_yazdir(
+                            hat2_kodu,
+                            hat2_adi,
+                            yon2,
+                            aktarma2_sira,
+                            hedef_sira
+                        )
+
+                        print(
+                            "\nNot: Mesafe koordinatlardan yaklaşık hesaplanır. "
+                            "Aktarmalı sefer saatlerinin birbirine uygunluğu "
+                            "henüz hesaplanmıyor."
+                        )
+
+    except json.JSONDecodeError:
+        print("Gemini yanıtı beklenen JSON biçiminde gelmedi.")
+    except ValueError:
+        print("Seçim alanına listedeki seçenek numarasını yazmalısın.")
+    except Exception as hata:
+        print("İşlem sırasında hata oluştu:", hata)
+
+
+if __name__ == "__main__":
+    komut_satiri_calistir()
