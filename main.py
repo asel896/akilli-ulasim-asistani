@@ -1,3 +1,4 @@
+import re
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -61,16 +62,48 @@ def duraklari_jsona_cevir(durak_satirlari):
     ]
 
 
-def durak_eslesmelerini_jsona_cevir(durak_satirlari):
-    return [
-        {
-            "durak_kodu": kod,
-            "durak_adi": ad,
-            "enlem": enlem,
-            "boylam": boylam,
-        }
-        for kod, ad, enlem, boylam in durak_satirlari
+def eslesme_metin_temizle(metin):
+    if not metin:
+        return ""
+
+    metin = re.sub(r"^\s*\d+\s*-\s*", "", metin)
+
+    kelimeler = [
+        kelime
+        for kelime in metni_normalize_et(metin).split()
+        if not kelime.startswith(("durak", "durag"))
     ]
+
+    return " ".join(kelimeler)
+
+
+def durak_eslesmelerini_jsona_cevir(durak_satirlari, aranan_yer):
+    temiz_aranan = eslesme_metin_temizle(aranan_yer)
+    sonuc = []
+
+    for kod, ad, enlem, boylam in durak_satirlari:
+        temiz_ad = eslesme_metin_temizle(ad)
+
+        if temiz_ad == temiz_aranan:
+            eslesme_turu = "tam"
+        elif temiz_ad.startswith(temiz_aranan):
+            eslesme_turu = "baslangictan"
+        elif temiz_aranan in temiz_ad:
+            eslesme_turu = "iceriyor"
+        else:
+            eslesme_turu = "diger"
+
+        sonuc.append(
+            {
+                "durak_kodu": kod,
+                "durak_adi": ad,
+                "enlem": enlem,
+                "boylam": boylam,
+                "eslesme_turu": eslesme_turu,
+            }
+        )
+
+    return sonuc
 
 
 def saatleri_jsona_cevir(hat_kodu, yon, gun):
@@ -165,7 +198,8 @@ def adres_coz_api(istek: AdresCozIstegi):
             "eslesme_sayisi": len(baslangic_duraklari),
             "birden_fazla_eslesme": len(baslangic_duraklari) > 1,
             "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
-                baslangic_duraklari
+                baslangic_duraklari,
+                 baslangic_yeri,
             ),
         },
         "hedef": {
@@ -173,7 +207,8 @@ def adres_coz_api(istek: AdresCozIstegi):
             "eslesme_sayisi": len(hedef_duraklari),
             "birden_fazla_eslesme": len(hedef_duraklari) > 1,
             "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
-                hedef_duraklari
+                hedef_duraklari,
+                hedef_yeri,
             ),
         },
         "hatalar": hatalar,
