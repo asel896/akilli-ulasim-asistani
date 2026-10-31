@@ -56,6 +56,11 @@ def metni_normalize_et(metin):
     )
 
 
+def durak_adini_sadeleştir(durak_adi):
+    durak_adi = re.sub(r"^\s*\d+\s*-\s*", "", durak_adi)
+    return metni_normalize_et(durak_adi)
+
+
 def durak_ara(yer_adi):
     if not yer_adi:
         return []
@@ -121,6 +126,131 @@ def dogrudan_hatlari_bul(baslangic_duraklari, hedef_duraklari):
     return hatlar
 
 
+def tek_aktarmali_hatlari_bul(baslangic_duraklari, hedef_duraklari):
+    baslangic_kodlari = list({durak[0] for durak in baslangic_duraklari})
+    hedef_kodlari = list({durak[0] for durak in hedef_duraklari})
+
+    if not baslangic_kodlari or not hedef_kodlari:
+        return []
+
+    with baglanti_ac() as baglanti:
+        ham_secenekler = baglanti.execute(
+            """
+            SELECT DISTINCT
+                h1.hat_kodu,
+                h1.hat_adi,
+                bas.yon,
+                bas.sira,
+                aktarma1.sira,
+                bas.durak_kodu,
+                aktarma1.durak_kodu,
+                bas_durak.durak_adi,
+
+                h2.hat_kodu,
+                h2.hat_adi,
+                aktarma2.yon,
+                aktarma2.sira,
+                hedef.sira,
+                hedef.durak_kodu,
+                aktarma_durak1.durak_adi,
+                aktarma_durak2.durak_adi,
+
+                sqrt(
+                    power(
+                        (aktarma_durak1.enlem - aktarma_durak2.enlem) * 111000,
+                        2
+                    ) +
+                    power(
+                        (aktarma_durak1.boylam - aktarma_durak2.boylam) * 87000,
+                        2
+                    )
+                ) AS yuru_mesafesi,
+
+                (aktarma1.sira - bas.sira)
+                + (hedef.sira - aktarma2.sira) AS toplam_durak_araligi
+
+            FROM hat_duraklar AS bas
+
+            JOIN hat_duraklar AS aktarma1
+              ON aktarma1.hat_kodu = bas.hat_kodu
+             AND aktarma1.yon = bas.yon
+             AND bas.sira < aktarma1.sira
+
+            JOIN hatlar AS h1
+              ON h1.hat_kodu = bas.hat_kodu
+
+            JOIN duraklar AS bas_durak
+              ON bas_durak.durak_kodu = bas.durak_kodu
+
+            JOIN duraklar AS aktarma_durak1
+              ON aktarma_durak1.durak_kodu = aktarma1.durak_kodu
+
+            JOIN hat_duraklar AS hedef
+              ON hedef.durak_kodu = ANY(%s::varchar[])
+
+            JOIN hatlar AS h2
+              ON h2.hat_kodu = hedef.hat_kodu
+
+            JOIN hat_duraklar AS aktarma2
+              ON aktarma2.hat_kodu = hedef.hat_kodu
+             AND aktarma2.yon = hedef.yon
+             AND aktarma2.sira < hedef.sira
+             AND aktarma2.hat_kodu <> bas.hat_kodu
+
+            JOIN duraklar AS aktarma_durak2
+              ON aktarma_durak2.durak_kodu = aktarma2.durak_kodu
+             AND aktarma_durak2.enlem
+                    BETWEEN aktarma_durak1.enlem - 0.0014
+                        AND aktarma_durak1.enlem + 0.0014
+             AND aktarma_durak2.boylam
+                    BETWEEN aktarma_durak1.boylam - 0.0018
+                        AND aktarma_durak1.boylam + 0.0018
+
+            WHERE h1.hizmet_turu IS DISTINCT FROM 'gorevli'
+              AND h2.hizmet_turu IS DISTINCT FROM 'gorevli'
+              AND bas.durak_kodu = ANY(%s::varchar[])
+              AND sqrt(
+                    power(
+                        (aktarma_durak1.enlem - aktarma_durak2.enlem) * 111000,
+                        2
+                    ) +
+                    power(
+                        (aktarma_durak1.boylam - aktarma_durak2.boylam) * 87000,
+                        2
+                    )
+                  ) <= 150
+
+            ORDER BY toplam_durak_araligi, yuru_mesafesi
+            LIMIT 200
+            """,
+            (hedef_kodlari, baslangic_kodlari)
+        ).fetchall()
+
+    # Aynı hat çifti ve aynı aktarma durağı bölgesine ait
+    # farklı başlangıç durağı eşleşmelerini tek seçeneğe indir.
+    tekil_secenekler = []
+    gorulenler = set()
+
+    for secenek in ham_secenekler:
+        anahtar = (
+            secenek[0],  # İlk hat kodu
+            secenek[2],  # İlk hattın yönü
+            secenek[8],  # İkinci hat kodu
+            secenek[10], # İkinci hattın yönü
+            durak_adini_sadeleştir(secenek[14]),
+            durak_adini_sadeleştir(secenek[15]),
+        )
+
+        if anahtar not in gorulenler:
+            gorulenler.add(anahtar)
+            tekil_secenekler.append(secenek)
+
+        if len(tekil_secenekler) >= 10:
+            break
+
+    return tekil_secenekler
+
+
 def hat_duraklarini_getir(hat_kodu, yon, ilk_sira, son_sira):
     with baglanti_ac() as baglanti:
         duraklar = baglanti.execute(
@@ -157,6 +287,49 @@ def sefer_saatlerini_getir(hat_kodu, yon, gun):
     return saatler
 
 
+def secilen_hattin_duraklarini_yazdir(
+    hat_kodu,
+    hat_adi,
+    yon,
+    ilk_sira,
+    son_sira
+):
+    print(f"\nHat {hat_kodu} | {hat_adi} | Yön: {yon}")
+
+    duraklar = hat_duraklarini_getir(
+        hat_kodu,
+        yon,
+        ilk_sira,
+        son_sira
+    )
+
+    for sira, kod, ad in duraklar:
+        print(f"  {sira}. {ad} (Kod: {kod})")
+
+
+def gun_sec():
+    gunler = [
+        "Pazartesi",
+        "Salı",
+        "Çarşamba",
+        "Perşembe",
+        "Cuma",
+        "Cumartesi",
+        "Pazar",
+    ]
+
+    gun_eslesmeleri = {
+        metni_normalize_et(gun): gun
+        for gun in gunler
+    }
+
+    girilen_gun = input(
+        "\nSefer saatlerini görmek istediğin gün: "
+    ).strip()
+
+    return gun_eslesmeleri.get(metni_normalize_et(girilen_gun))
+
+
 cumle = input("Nereden nereye gitmek istiyorsun? ")
 
 try:
@@ -176,18 +349,15 @@ try:
     elif not hedef_duraklari:
         print("\nHedef için eşleşen durak bulunamadı.")
     else:
-        bulunan_hatlar = dogrudan_hatlari_bul(
+        dogrudan_hatlar = dogrudan_hatlari_bul(
             baslangic_duraklari,
             hedef_duraklari
         )
 
-        if not bulunan_hatlar:
-            print("\nBu iki durak arasında doğrudan hat bulunamadı.")
-            print("Aktarmalı yol bulma özelliğini sonraki aşamada ekleyeceğiz.")
-        else:
+        if dogrudan_hatlar:
             print("\nDoğrudan hat seçenekleri:")
 
-            for sira, hat in enumerate(bulunan_hatlar, start=1):
+            for sira, hat in enumerate(dogrudan_hatlar, start=1):
                 (
                     hat_kodu,
                     hat_adi,
@@ -213,13 +383,13 @@ try:
                 )
 
             secim = int(
-                input("\nDurak sırasını görmek istediğin seçeneğin numarası: ")
+                input("\nGitmek istediğin hat seçeneğinin numarası: ")
             )
 
-            if secim < 1 or secim > len(bulunan_hatlar):
+            if secim < 1 or secim > len(dogrudan_hatlar):
                 print("Geçersiz seçenek numarası.")
             else:
-                secilen_hat = bulunan_hatlar[secim - 1]
+                hat = dogrudan_hatlar[secim - 1]
 
                 (
                     hat_kodu,
@@ -232,58 +402,32 @@ try:
                     baslangic_durak_adi,
                     hedef_durak_adi,
                     durak_araligi
-                ) = secilen_hat
+                ) = hat
 
-                print(f"\nHat {hat_kodu} durak sırası:")
-                print(f"{baslangic_durak_adi} → {hedef_durak_adi}")
-
-                guzergah_duraklari = hat_duraklarini_getir(
+                secilen_hattin_duraklarini_yazdir(
                     hat_kodu,
+                    hat_adi,
                     yon,
                     ilk_sira,
                     son_sira
                 )
 
-                for sira, kod, ad in guzergah_duraklari:
-                    print(f"  {sira}. {ad} (Kod: {kod})")
-
-                gunler = [
-                    "Pazartesi",
-                    "Salı",
-                    "Çarşamba",
-                    "Perşembe",
-                    "Cuma",
-                    "Cumartesi",
-                    "Pazar",
-                ]
-
-                gun_eslesmeleri = {
-                    metni_normalize_et(gun): gun
-                    for gun in gunler
-                }
-
-                girilen_gun = input(
-                    "\nSefer saatlerini görmek istediğin gün: "
-                ).strip()
-
-                gun = gun_eslesmeleri.get(
-                    metni_normalize_et(girilen_gun)
-                )
+                gun = gun_sec()
 
                 if not gun:
                     print("Gün adını listedeki biçimlerden biriyle yazmalısın.")
                 else:
-                    saatler = sefer_saatlerini_getir(
-                        hat_kodu,
-                        yon,
-                        gun
-                    )
+                    saatler = sefer_saatlerini_getir(hat_kodu, yon, gun)
 
                     if saatler:
                         print(f"\nHat {hat_kodu} için {gun} sefer saatleri:")
 
                         for saat, aciklama in saatler:
-                            saat_metni = saat.strftime("%H:%M") if hasattr(saat, "strftime") else str(saat)
+                            saat_metni = (
+                                saat.strftime("%H:%M")
+                                if hasattr(saat, "strftime")
+                                else str(saat)
+                            )
                             ek_bilgi = f" ({aciklama})" if aciklama else ""
                             print(f"  {saat_metni}{ek_bilgi}")
 
@@ -295,8 +439,120 @@ try:
                     else:
                         print(
                             f"\nHat {hat_kodu} için {gun} günü "
-                            "veritabanında sefer saati bulunmuyor."
+                            "sefer saati bulunmuyor."
                         )
+
+        else:
+            print(
+                "\nDoğrudan hat bulunamadı. "
+                "Yakın duraklı aktarmalar aranıyor..."
+            )
+
+            aktarmali_hatlar = tek_aktarmali_hatlari_bul(
+                baslangic_duraklari,
+                hedef_duraklari
+            )
+
+            if not aktarmali_hatlar:
+                print("150 metre içinde tek aktarmalı güzergâh bulunamadı.")
+            else:
+                print("\nTek aktarmalı seçenekler:")
+
+                for sira, secenek in enumerate(aktarmali_hatlar, start=1):
+                    (
+                        hat1_kodu,
+                        hat1_adi,
+                        yon1,
+                        bas_sira,
+                        aktarma1_sira,
+                        bas_kodu,
+                        aktarma1_kodu,
+                        bas_adi,
+                        hat2_kodu,
+                        hat2_adi,
+                        yon2,
+                        aktarma2_sira,
+                        hedef_sira,
+                        hedef_kodu,
+                        aktarma1_adi,
+                        aktarma2_adi,
+                        yuru_mesafesi,
+                        toplam_durak_araligi
+                    ) = secenek
+
+                    print(
+                        f"\n{sira}. Hat {hat1_kodu} ({yon1}): "
+                        f"{bas_adi} → {aktarma1_adi}"
+                    )
+                    print(
+                        f"   Aktarma: {aktarma1_adi} durağından in, "
+                        f"{aktarma2_adi} durağına yaklaşık "
+                        f"{yuru_mesafesi:.0f} m yürü."
+                    )
+                    print(
+                        f"   Hat {hat2_kodu} ({yon2}): "
+                        f"{aktarma2_adi} → hedef"
+                    )
+
+                secim = int(
+                    input("\nGüzergâh seçeneğinin numarasını gir: ")
+                )
+
+                if secim < 1 or secim > len(aktarmali_hatlar):
+                    print("Geçersiz seçenek numarası.")
+                else:
+                    secenek = aktarmali_hatlar[secim - 1]
+
+                    (
+                        hat1_kodu,
+                        hat1_adi,
+                        yon1,
+                        bas_sira,
+                        aktarma1_sira,
+                        bas_kodu,
+                        aktarma1_kodu,
+                        bas_adi,
+                        hat2_kodu,
+                        hat2_adi,
+                        yon2,
+                        aktarma2_sira,
+                        hedef_sira,
+                        hedef_kodu,
+                        aktarma1_adi,
+                        aktarma2_adi,
+                        yuru_mesafesi,
+                        toplam_durak_araligi
+                    ) = secenek
+
+                    print("\nBirinci etap:")
+                    secilen_hattin_duraklarini_yazdir(
+                        hat1_kodu,
+                        hat1_adi,
+                        yon1,
+                        bas_sira,
+                        aktarma1_sira
+                    )
+
+                    print(
+                        f"\nYürüme aktarması: {aktarma1_adi} "
+                        f"→ {aktarma2_adi} "
+                        f"(yaklaşık {yuru_mesafesi:.0f} m)"
+                    )
+
+                    print("\nİkinci etap:")
+                    secilen_hattin_duraklarini_yazdir(
+                        hat2_kodu,
+                        hat2_adi,
+                        yon2,
+                        aktarma2_sira,
+                        hedef_sira
+                    )
+
+                    print(
+                        "\nNot: Mesafe koordinatlardan yaklaşık hesaplanır. "
+                        "Aktarmalı sefer saatlerinin birbirine uygunluğu "
+                        "henüz hesaplanmıyor."
+                    )
 
 except json.JSONDecodeError:
     print("Gemini yanıtı beklenen JSON biçiminde gelmedi.")
