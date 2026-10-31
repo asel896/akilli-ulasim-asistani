@@ -83,22 +83,54 @@ def durak_ara(yer_adi):
             """
         ).fetchall()
 
-    aranan = metni_normalize_et(yer_adi)
+    def karsilastirma_icin_temizle(metin):
+        temiz_metin = durak_adini_sadeleştir(metin)
 
-    aranan = " ".join(
-        kelime
-        for kelime in aranan.split()
-        if not kelime.startswith(("durak", "durag"))
-    )
+        kelimeler = [
+            kelime
+            for kelime in temiz_metin.split()
+            if not kelime.startswith(("durak", "durag"))
+        ]
+
+        return " ".join(kelimeler)
+
+    aranan = karsilastirma_icin_temizle(yer_adi)
 
     if not aranan:
         return []
+   
 
-    return [
-        durak
+    temiz_duraklar = [
+        (durak, karsilastirma_icin_temizle(durak[1]))
         for durak in duraklar
-        if aranan in metni_normalize_et(durak[1])
-    ][:10]
+    ]
+
+    tam_eslesenler = [
+        durak
+        for durak, temiz_ad in temiz_duraklar
+        if temiz_ad == aranan
+    ]
+
+    if tam_eslesenler:
+        return tam_eslesenler[:10]
+
+    baslangicta_eslesenler = [
+        durak
+        for durak, temiz_ad in temiz_duraklar
+        if temiz_ad.startswith(aranan)
+    ]
+
+    if baslangicta_eslesenler:
+        return baslangicta_eslesenler[:10]
+
+    iceren_eslesenler = [
+        durak
+        for durak, temiz_ad in temiz_duraklar
+        if aranan in temiz_ad
+    ]
+
+    return iceren_eslesenler[:10]
+
 
 
 def dogrudan_hatlari_bul(baslangic_duraklari, hedef_duraklari):

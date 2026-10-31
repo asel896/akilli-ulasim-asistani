@@ -23,8 +23,10 @@ class YolTarifiIstegi(BaseModel):
     soru: str
     gun: str | None = None
 
+
 class AdresCozIstegi(BaseModel):
     metin: str
+
 
 GUNLER = [
     "Pazartesi",
@@ -160,19 +162,22 @@ def adres_coz_api(istek: AdresCozIstegi):
         "basarili": len(hatalar) == 0,
         "baslangic": {
             "anlasilan_yer": baslangic_yeri,
+            "eslesme_sayisi": len(baslangic_duraklari),
+            "birden_fazla_eslesme": len(baslangic_duraklari) > 1,
             "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
                 baslangic_duraklari
             ),
         },
         "hedef": {
             "anlasilan_yer": hedef_yeri,
+            "eslesme_sayisi": len(hedef_duraklari),
+            "birden_fazla_eslesme": len(hedef_duraklari) > 1,
             "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
                 hedef_duraklari
             ),
         },
         "hatalar": hatalar,
     }
-
 
 
 @app.post("/yol-tarifi")
