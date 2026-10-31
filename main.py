@@ -1,4 +1,5 @@
 import re
+from geocoding import adresi_koordinata_cevir, GeocodingError
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -18,6 +19,32 @@ app = FastAPI(
     description="Malatya toplu taşıma hatları için yönlendirme servisi",
     version="1.0.0",
 )
+
+
+class GeocodingRequest(BaseModel):
+    adres: str
+
+
+@app.post("/geocode")
+def geocode_endpoint(girdi: GeocodingRequest):
+    try:
+        sonuc = adresi_koordinata_cevir(girdi.adres)
+    except ValueError as hata:
+        raise HTTPException(status_code=400, detail=str(hata))
+    except GeocodingError as hata:
+        raise HTTPException(status_code=502, detail=str(hata))
+
+    if sonuc is None:
+        return {
+            "basarili": False,
+            "mesaj": "Bu adres için koordinat bulunamadı."
+        }
+
+    return {
+        "basarili": True,
+        "adres": girdi.adres,
+        **sonuc
+    }
 
 
 class YolTarifiIstegi(BaseModel):
@@ -77,6 +104,21 @@ def eslesme_metin_temizle(metin):
     return " ".join(kelimeler)
 
 
+GENEL_YERLER = {
+    "malatya",
+    "yesilyurt",
+    "battalgazi",
+    "merkez",
+    "turkiye",
+}
+
+
+def yer_cok_genel_mi(yer):
+    if not yer:
+        return False
+    return metni_normalize_et(yer).strip() in GENEL_YERLER
+
+
 def durak_eslesmelerini_jsona_cevir(durak_satirlari, aranan_yer):
     temiz_aranan = eslesme_metin_temizle(aranan_yer)
     sonuc = []
@@ -104,6 +146,16 @@ def durak_eslesmelerini_jsona_cevir(durak_satirlari, aranan_yer):
         )
 
     return sonuc
+
+
+def adresi_geocode_et(adres):
+    if not adres or not adres.strip():
+        return None, None
+
+    try:
+        return adresi_koordinata_cevir(adres), None
+    except GeocodingError as hata:
+        return None, str(hata)
 
 
 def saatleri_jsona_cevir(hat_kodu, yon, gun):
@@ -168,28 +220,71 @@ def adres_coz_api(istek: AdresCozIstegi):
     baslangic_yeri = adresler.get("baslangic")
     hedef_yeri = adresler.get("hedef")
 
+    baslangic_yeri_genel = yer_cok_genel_mi(baslangic_yeri)
+    hedef_yeri_genel = yer_cok_genel_mi(hedef_yeri)
+
     baslangic_duraklari = (
         durak_ara(baslangic_yeri)
-        if baslangic_yeri
+        if baslangic_yeri and not baslangic_yeri_genel
         else []
     )
     hedef_duraklari = (
         durak_ara(hedef_yeri)
-        if hedef_yeri
+        if hedef_yeri and not hedef_yeri_genel
         else []
     )
+
+    baslangic_koordinati = None
+    if (
+        baslangic_yeri
+        and not baslangic_yeri_genel
+        and not baslangic_duraklari
+    ):
+        baslangic_koordinati, _ = adresi_geocode_et(baslangic_yeri)
+
+    hedef_koordinati = None
+    if hedef_yeri and not hedef_yeri_genel and not hedef_duraklari:
+        hedef_koordinati, _ = adresi_geocode_et(hedef_yeri)
 
     hatalar = []
 
     if not baslangic_yeri:
         hatalar.append("Başlangıç yeri anlaşılamadı.")
-    elif not baslangic_duraklari:
-        hatalar.append("Başlangıç yeriyle eşleşen durak bulunamadı.")
+    elif baslangic_yeri_genel:
+        hatalar.append(
+            "Başlangıç yeri çok genel. Cadde, mahalle veya durak adı belirt."
+        )
+    elif not baslangic_duraklari and not baslangic_koordinati:
+        hatalar.append(
+            "Başlangıç yeri için durak eşleşmesi veya koordinat bulunamadı."
+        )
 
     if not hedef_yeri:
         hatalar.append("Hedef yeri anlaşılamadı.")
-    elif not hedef_duraklari:
-        hatalar.append("Hedef yeriyle eşleşen durak bulunamadı.")
+    elif hedef_yeri_genel:
+        hatalar.append(
+            "Hedef yeri çok genel. Cadde, mahalle veya durak adı belirt."
+        )
+    elif not hedef_duraklari and not hedef_koordinati:
+        hatalar.append(
+            "Hedef yeri için durak eşleşmesi veya koordinat bulunamadı."
+        )
+
+    baslangic_cozum_turu = "bulunamadi"
+    if baslangic_yeri_genel:
+        baslangic_cozum_turu = "yetersiz_bilgi"
+    elif baslangic_duraklari:
+        baslangic_cozum_turu = "durak_eslesmesi"
+    elif baslangic_koordinati:
+        baslangic_cozum_turu = "geocoding"
+
+    hedef_cozum_turu = "bulunamadi"
+    if hedef_yeri_genel:
+        hedef_cozum_turu = "yetersiz_bilgi"
+    elif hedef_duraklari:
+        hedef_cozum_turu = "durak_eslesmesi"
+    elif hedef_koordinati:
+        hedef_cozum_turu = "geocoding"
 
     return {
         "basarili": len(hatalar) == 0,
@@ -197,15 +292,19 @@ def adres_coz_api(istek: AdresCozIstegi):
             "anlasilan_yer": baslangic_yeri,
             "eslesme_sayisi": len(baslangic_duraklari),
             "birden_fazla_eslesme": len(baslangic_duraklari) > 1,
+            "cozum_turu": baslangic_cozum_turu,
+            "adres_koordinati": baslangic_koordinati,
             "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
                 baslangic_duraklari,
-                 baslangic_yeri,
+                baslangic_yeri,
             ),
         },
         "hedef": {
             "anlasilan_yer": hedef_yeri,
             "eslesme_sayisi": len(hedef_duraklari),
             "birden_fazla_eslesme": len(hedef_duraklari) > 1,
+            "cozum_turu": hedef_cozum_turu,
+            "adres_koordinati": hedef_koordinati,
             "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
                 hedef_duraklari,
                 hedef_yeri,
@@ -258,6 +357,24 @@ def yol_tarifi(istek: YolTarifiIstegi):
             status_code=422,
             detail="İstekten başlangıç ve hedef yeri anlaşılamadı.",
         )
+
+    if yer_cok_genel_mi(baslangic_yeri):
+        return {
+            "basarili": False,
+            "mesaj": (
+                "Başlangıç yeri çok genel. Cadde, mahalle veya durak adı belirt."
+            ),
+            "anlasilan_baslangic": baslangic_yeri,
+            "anlasilan_hedef": hedef_yeri,
+        }
+
+    if yer_cok_genel_mi(hedef_yeri):
+        return {
+            "basarili": False,
+            "mesaj": "Hedef yeri çok genel. Cadde, mahalle veya durak adı belirt.",
+            "anlasilan_baslangic": baslangic_yeri,
+            "anlasilan_hedef": hedef_yeri,
+        }
 
     baslangic_duraklari = durak_ara(baslangic_yeri)
     hedef_duraklari = durak_ara(hedef_yeri)
