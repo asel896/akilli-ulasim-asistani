@@ -23,6 +23,8 @@ class YolTarifiIstegi(BaseModel):
     soru: str
     gun: str | None = None
 
+class AdresCozIstegi(BaseModel):
+    metin: str
 
 GUNLER = [
     "Pazartesi",
@@ -54,6 +56,18 @@ def duraklari_jsona_cevir(durak_satirlari):
             "durak_adi": ad,
         }
         for sira, kod, ad in durak_satirlari
+    ]
+
+
+def durak_eslesmelerini_jsona_cevir(durak_satirlari):
+    return [
+        {
+            "durak_kodu": kod,
+            "durak_adi": ad,
+            "enlem": enlem,
+            "boylam": boylam,
+        }
+        for kod, ad, enlem, boylam in durak_satirlari
     ]
 
 
@@ -93,6 +107,72 @@ def ana_sayfa():
 @app.get("/saglik")
 def saglik_kontrolu():
     return {"durum": "çalışıyor"}
+
+
+@app.post("/adres-coz")
+def adres_coz_api(istek: AdresCozIstegi):
+    metin = istek.metin.strip()
+
+    if not metin:
+        raise HTTPException(
+            status_code=422,
+            detail="Adres metni boş olamaz.",
+        )
+
+    try:
+        adresler = adresleri_coz(metin)
+    except Exception as hata:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Adres çözümleme sırasında hata oluştu: "
+                f"{type(hata).__name__}"
+            ),
+        ) from hata
+
+    baslangic_yeri = adresler.get("baslangic")
+    hedef_yeri = adresler.get("hedef")
+
+    baslangic_duraklari = (
+        durak_ara(baslangic_yeri)
+        if baslangic_yeri
+        else []
+    )
+    hedef_duraklari = (
+        durak_ara(hedef_yeri)
+        if hedef_yeri
+        else []
+    )
+
+    hatalar = []
+
+    if not baslangic_yeri:
+        hatalar.append("Başlangıç yeri anlaşılamadı.")
+    elif not baslangic_duraklari:
+        hatalar.append("Başlangıç yeriyle eşleşen durak bulunamadı.")
+
+    if not hedef_yeri:
+        hatalar.append("Hedef yeri anlaşılamadı.")
+    elif not hedef_duraklari:
+        hatalar.append("Hedef yeriyle eşleşen durak bulunamadı.")
+
+    return {
+        "basarili": len(hatalar) == 0,
+        "baslangic": {
+            "anlasilan_yer": baslangic_yeri,
+            "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
+                baslangic_duraklari
+            ),
+        },
+        "hedef": {
+            "anlasilan_yer": hedef_yeri,
+            "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
+                hedef_duraklari
+            ),
+        },
+        "hatalar": hatalar,
+    }
+
 
 
 @app.post("/yol-tarifi")

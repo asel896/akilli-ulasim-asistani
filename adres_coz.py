@@ -23,12 +23,19 @@ istemci = genai.Client(api_key=api_anahtari)
 
 def adresleri_coz(kullanici_cumlesi):
     istem = f"""
-Kullanıcının toplu taşıma isteğinden başlangıç ve hedef yer adlarını çıkar.
-Yalnızca JSON döndür. Açıklama veya Markdown ekleme.
-Başlangıç belirtilmemişse baslangic değerini null yap.
-Hedef belirtilmemişse hedef değerini null yap.
+Sen Malatya'daki toplu taşıma yol tarifi isteklerinden
+başlangıç ve hedef yerlerini çıkaran bir yardımcı asistansın.
 
-JSON biçimi:
+Kullanıcı herhangi bir durak, mahalle, kurum veya bilinen yer adı
+söyleyebilir. Yer adlarını belirli bir listeyle sınırlama.
+Yazım hatalarını ve Türkçe karakter eksikliklerini, anlam açıksa düzelt.
+"-den", "-dan", "-e", "-a" gibi yön eklerini yer adından ayır.
+Kullanıcının söylemediği bir yeri uydurma.
+Başlangıç veya hedef açıkça anlaşılamıyorsa ilgili değeri null yap.
+
+Yalnızca aşağıdaki biçimde geçerli JSON döndür.
+Açıklama veya Markdown ekleme:
+
 {{"baslangic": "yer adı veya null", "hedef": "yer adı veya null"}}
 
 Kullanıcı cümlesi: {kullanici_cumlesi}
@@ -40,9 +47,11 @@ Kullanıcı cümlesi: {kullanici_cumlesi}
     )
 
     metin = yanit.text.strip()
-    metin = re.sub(r"^```(?:json)?\s*|\s*```$", "", metin)
+    metin = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", metin)
 
     return json.loads(metin)
+
+
 
 
 def metni_normalize_et(metin):
@@ -75,6 +84,15 @@ def durak_ara(yer_adi):
         ).fetchall()
 
     aranan = metni_normalize_et(yer_adi)
+
+    aranan = " ".join(
+        kelime
+        for kelime in aranan.split()
+        if not kelime.startswith(("durak", "durag"))
+    )
+
+    if not aranan:
+        return []
 
     return [
         durak
