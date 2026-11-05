@@ -90,18 +90,8 @@ def duraklari_jsona_cevir(durak_satirlari):
 
 
 def eslesme_metin_temizle(metin):
-    if not metin:
-        return ""
-
-    metin = re.sub(r"^\s*\d+\s*-\s*", "", metin)
-
-    kelimeler = [
-        kelime
-        for kelime in metni_normalize_et(metin).split()
-        if not kelime.startswith(("durak", "durag"))
-    ]
-
-    return " ".join(kelimeler)
+    from durak_eslestirme import eslestirme_metni
+    return eslestirme_metni(metin)
 
 
 GENEL_YERLER = {
