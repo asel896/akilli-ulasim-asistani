@@ -1,865 +1,598 @@
+"""100 sorguluk yerel adres testini sabit bir klasörde başlat veya sürdür."""
 import argparse
 import hashlib
 import json
+import math
+import os
 import re
 import time
 import unicodedata
 from collections import Counter
-from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
-import requests
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-
-KLASOR = Path(__file__).resolve().parent
-ALTIN_DOSYA = KLASOR / "adres_testi_beklentiler.json"
-
-
-# Beklenen yerler, API sonuçları görülmeden tanımlanmıştır.
-# Aynı tam ada sahip farklı durak kodlarının tamamı kabul edilir.
-DURAK_ADLARI = {
-    "stadyum": "STADYUM",
-    "villakent": "VİLLAKENT BULGURLU",
-    "erkek_yurdu": "BATTALGAZİ ERKEK YURDU",
-    "toki": "BAHÇEBAŞI TOKİ",
-    "polis_evi": "POLİS EVİ",
-    "orduzu": "ORDUZU PINARBAŞI",
-    "mismis": "MİŞMİŞ PARK FUAR ALANI",
-    "seyrantepe": "SEYRANTEPE",
-    "anadolu_lisesi": "MALATYA ANADOLU LİSESİ",
-    "yildiztepe": "YILDIZTEPE",
-    "yusuf1": "YUSUF ÖZAL CAD. 1",
-    "yusuf2": "YUSUF ÖZAL CAD. 2",
-    "yusuf3": "YUSUF ÖZAL CAD. 3",
-    "yusuf4": "YUSUF ÖZAL CAD. 4",
-    "inderesi": "İNDERESİ 1",
-    "yusuf5": "YUSUF ÖZAL CAD. 5",
-    "yusuf6": "YUSUF ÖZAL CAD. 6",
-    "kanal1": "KANALBOYU CAD. 1",
-    "kanal2": "KANALBOYU CAD. 2",
-    "kanal3": "KANALBOYU CAD. 3",
-    "aspuzu1": "ASPUZU CAD. 1",
-    "aspuzu2": "ASPUZU CAD. 2",
-    "aspuzu3": "ASPUZU CAD. 3",
-    "aspuzu4": "ASPUZU CAD. 4",
-    "mezarlik": "KUYU ÖNÜ MEZARLIK",
-    "itfaiye": "KUYU ÖNÜ İTFAİYE",
-    "ibnisina": "İBN-İ SİNA İLKOKULU",
-    "saat": "SAAT KULESİ",
-    "yazihan1": "YAZIHAN 1",
-    "yazihan10": "YAZIHAN 10",
-    "yazihan11": "YAZIHAN 11",
-    "yazihan2": "YAZIHAN 2",
-    "yazihan3": "YAZIHAN 3",
-    "yazihan4": "YAZIHAN 4",
-    "govuk": "GÖVÜK YOL AYRIMI",
-    "tohma1": "TOHMA KÖPRÜSÜ 1",
-    "tohma2": "TOHMA KÖPRÜSÜ 2",
-    "teias": "TEİAŞ TRAFO",
-    "demokrasi": "DEMOKRASİ CAD.",
-    "drijan": "DRİJAN BULVARI",
-    "jandarma": "YAZIHAN İLÇE JANDARMA",
-}
-
-
-KISALTMALAR = [
-    ("yusuf3", "Yusuf Özal Cd. 3", "itfaiye"),
-    ("kanal2", "Kanalboyu Cd. 2", "saat"),
-    ("aspuzu4", "Aspuzu Cd. 4", "mezarlik"),
-    ("ibnisina", "İbn-i Sina İlkok.", "govuk"),
-    ("mismis", "Mişmiş Pk. Fuar Alanı", "polis_evi"),
-    ("anadolu_lisesi", "Malatya Anadolu Lis.", "yusuf1"),
-    ("erkek_yurdu", "Battalgazi Erkek Yrd.", "tohma1"),
-    ("orduzu", "Orduzu Pınarb.", "demokrasi"),
-    ("jandarma", "Yazıhan İlçe Jand.", "kanal3"),
-    ("teias", "TEİAŞ Trafo", "yusuf5"),
-]
-
-
-YAZIM_HATALARI = [
-    ("stadyum", "Stadyom", "yildiztepe"),
-    ("villakent", "Vılakent Bulgurlu", "polis_evi"),
-    ("seyrantepe", "Seyranteppe", "itfaiye"),
-    ("mismis", "Mismis Park Fuar Alni", "mezarlik"),
-    ("anadolu_lisesi", "Malatya Anadlu Lisesi", "saat"),
-    ("demokrasi", "Demokrasi Caddessi", "teias"),
-    ("jandarma", "Yazihan Ilce Jandamra", "drijan"),
-    ("ibnisina", "Ibni Sina Ilkoklu", "govuk"),
-    ("orduzu", "Orduzu Pinarbasi", "tohma1"),
-    ("kanal2", "Kanalbyu Caddesi 2", "aspuzu4"),
-]
-
-
-BENZER_ADLAR = [
-    ("yusuf1", "yusuf2"),
-    ("yusuf2", "yusuf1"),
-    ("yusuf3", "yusuf4"),
-    ("yusuf4", "yusuf3"),
-    ("yusuf5", "yusuf6"),
-    ("yusuf6", "yusuf5"),
-    ("kanal1", "kanal2"),
-    ("kanal2", "kanal3"),
-    ("kanal3", "kanal1"),
-    ("aspuzu1", "aspuzu2"),
-    ("aspuzu2", "aspuzu3"),
-    ("aspuzu3", "aspuzu4"),
-    ("aspuzu4", "aspuzu1"),
-    ("mezarlik", "itfaiye"),
-    ("itfaiye", "mezarlik"),
-    ("yazihan1", "yazihan10"),
-    ("yazihan10", "yazihan11"),
-    ("yazihan11", "yazihan1"),
-    ("tohma1", "tohma2"),
-    ("tohma2", "tohma1"),
-]
-
-
-KALIPLAR = [
-    "{a} durağından {b} durağına nasıl giderim?",
-    "Başlangıcım {a}, hedefim {b}. Nasıl ulaşırım?",
-    "{a} konumundan çıkacağım, {b} konumuna gitmek istiyorum.",
-    "Nereden: {a}. Nereye: {b}. Yol tarifi istiyorum.",
-    "{b} durağına ulaşmak istiyorum; şu an {a} durağındayım.",
-]
-
-
-def normalize(metin):
-    metin = str(metin).casefold().replace("ı", "i")
-    metin = unicodedata.normalize("NFKD", metin)
-    metin = "".join(
-        karakter
-        for karakter in metin
-        if not unicodedata.combining(karakter)
-    )
-    return re.sub(r"[^a-z0-9]+", " ", metin).strip()
-
-
-def durak_adini_temizle(metin):
-    metin = re.sub(r"^\s*\d+\s*-\s*", "", metin)
-    return normalize(metin)
-
-
-def ascii_yap(metin):
-    metin = metin.replace("ı", "i").replace("İ", "I")
-    metin = unicodedata.normalize("NFKD", metin)
-    return "".join(
-        karakter
-        for karakter in metin
-        if not unicodedata.combining(karakter)
-    ).lower()
-
-
-def gorunen_ad(anahtar):
-    return DURAK_ADLARI[anahtar].replace("CAD.", "CADDESİ")
-
-
-def dosyaya_yaz(yol, veri):
-    yol.write_text(
-        json.dumps(veri, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+ALTIN_DOSYA = Path(__file__).resolve().with_name("adres_testi_beklentiler.json")
+TARAFLAR = ("baslangic", "hedef")
+KOORDINAT_ESIGI = 50
+KOORDINAT_HEDEFI = 85
+KOORDINAT_URL = "http://127.0.0.1:8000/adres-coz"
+KOORDINAT_DURAKLARI = (
+    ("10001", "Maliye Durağı", "Maliyee Duragı"),
+    ("10002", "Ticaret ve Sanayi Odası", "Ticart ve Sanayi Odası"),
+    ("10003", "Sanayi", "Sanyai"),
+    ("11309", "Posta İşleme ve Dağıtım Merkezi", "Posta İşlme ve Dagıtım Merkezi"),
+    ("10004", "Malatya Büyükşehir Belediyesi", "Malatya Buyuksehir Beledyesi"),
+    ("10005", "Dedekorkut", "Dedekorkt"),
+    ("10006", "Eğitim ve Araştırma Hastanesi", "Egtim ve Arastrma Hastanesi"),
+    ("10007", "SGK Şeker Fabrikası", "SGK Seker Fabrkası"),
+    ("10008", "İŞKUR", "İSKURR"),
+    ("10010", "Spor ve Yaşam Merkezi", "Spor ve Yasm Merkezi"),
+    ("10011", "Fahri Kayahan", "Fahri Kayahn"),
+    ("10012", "MAŞTİ Otogar", "Maşti Otogarr"),
+    ("10951", "İnönü Üniversitesi", "Inönü Universitsi"),
+    ("12502", "İnönü Üniversitesi OSB MYO", "Inönü Universitsi OSB MYO"),
+    ("11887", "Tecde Şelale", "Tecdee Selale"),
+    ("10105", "Yazıhan 11", "Yazhan 11"),
+)
+KOORDINAT_ADRESLERI = (
+    ("Taşhoron Kilisesi, Malatya", "Taşhoron Kilsei, Malatya", 38.352448, 38.302082,
+     "https://www.haritamap.com/lokasyon/tashoron-kilisesi-41"),
+    ("Somuncu Baba Türbesi ve Külliyesi, Darende", "Somuncu Baba Türbesi ve Kulliysei, Darende", 38.560963, 37.491241,
+     "https://www.haritamap.com/yer/somuncu-baba-turbesi-ve-kulliyesi-darende"),
+    ("Arslantepe Höyüğü, Orduzu", "Arslantepe Höygu, Orduzu", 38 + 22/60 + 58/3600, 38 + 21/60 + 47.43/3600,
+     "https://kvmgm.ktb.gov.tr/TR-291002/arslantepe-hoyugu-malatya.html"),
+    ("Tevfik Temelli Caddesi 21. Sokak, Yeşilyurt", "Tevfk Temelli Caddesi 21. Sokak, Yesilyrt", 38.341824, 38.290207,
+     "https://www.haritamap.com/yer/tevfik-temelli-caddesi-21-sokak-yesilyurt"),
+)
 
 
 def ozet_degeri(veri):
-    metin = json.dumps(
-        veri,
-        ensure_ascii=False,
-        sort_keys=True,
-    )
+    metin = json.dumps(veri, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(metin.encode("utf-8")).hexdigest()
 
 
-def beklenen_durak(anahtar):
-    return {"tur": "durak", "yer": anahtar}
+def dosyaya_yaz(yol, veri):
+    gecici = yol.with_suffix(yol.suffix + ".tmp")
+    gecici.write_text(json.dumps(veri, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    gecici.replace(yol)
 
 
-def testleri_olustur():
-    testler = []
-    anahtarlar = list(DURAK_ADLARI)
-
-    def ekle(kategori, soru, baslangic, hedef):
-        testler.append(
-            {
-                "id": f"T{len(testler) + 1:03}",
-                "kategori": kategori,
-                "soru": soru,
-                "baslangic": baslangic,
-                "hedef": hedef,
-            }
-        )
-
-    # 10 normal sorgu.
-    for i in range(10):
-        a = anahtarlar[i + 10]
-        b = anahtarlar[(i + 23) % len(anahtarlar)]
-        soru = KALIPLAR[i % len(KALIPLAR)].format(
-            a=gorunen_ad(a),
-            b=gorunen_ad(b),
-        )
-        ekle("normal", soru, beklenen_durak(a), beklenen_durak(b))
-
-    # 10 kısaltmalı sorgu.
-    for a, kisa_ad, b in KISALTMALAR:
-        soru = (
-            f"{kisa_ad} durağından "
-            f"{gorunen_ad(b)} durağına nasıl gidebilirim?"
-        )
-        ekle("kisaltma", soru, beklenen_durak(a), beklenen_durak(b))
-
-    # 20 Türkçe karaktersiz sorgu.
-    for i in range(20):
-        a = anahtarlar[(i + 19) % len(anahtarlar)]
-        b = anahtarlar[(i + 7) % len(anahtarlar)]
-        soru = KALIPLAR[(i + 2) % len(KALIPLAR)].format(
-            a=gorunen_ad(a),
-            b=gorunen_ad(b),
-        )
-        ekle(
-            "turkce_karaktersiz",
-            ascii_yap(soru),
-            beklenen_durak(a),
-            beklenen_durak(b),
-        )
-
-    # 10 yazım hatalı sorgu.
-    for a, hatali_ad, b in YAZIM_HATALARI:
-        soru = (
-            f"{hatali_ad} duragindan "
-            f"{ascii_yap(gorunen_ad(b))} duragina nasil ulasirim?"
-        )
-        ekle(
-            "yazim_hatali",
-            soru,
-            beklenen_durak(a),
-            beklenen_durak(b),
-        )
-
-    # 20 benzer adlı veya numaralı durak sorgusu.
-    for i, (a, b) in enumerate(BENZER_ADLAR):
-        soru = KALIPLAR[(i + 3) % len(KALIPLAR)].format(
-            a=gorunen_ad(a),
-            b=gorunen_ad(b),
-        )
-        ekle(
-            "benzer_adlari_ayirma",
-            soru,
-            beklenen_durak(a),
-            beklenen_durak(b),
-        )
-
-    # 10 eksik bilgi sorgusu: 5 başlangıç, 5 hedef eksik.
-    for i in range(5):
-        b = anahtarlar[i * 3]
-        a = anahtarlar[i * 3 + 1]
-
-        ekle(
-            "eksik_bilgi",
-            f"{gorunen_ad(b)} durağına gitmek istiyorum.",
-            {"tur": "eksik"},
-            beklenen_durak(b),
-        )
-
-        ekle(
-            "eksik_bilgi",
-            (
-                f"Şu an {gorunen_ad(a)} durağındayım. "
-                "Toplu taşımayla gitmek istiyorum."
-            ),
-            beklenen_durak(a),
-            {"tur": "eksik"},
-        )
-
-    # 10 bilinçli olarak uydurulmuş yer sorgusu.
-    for i in range(5):
-        a = anahtarlar[i * 2 + 20]
-        b = anahtarlar[i * 2 + 21]
-        bilinmeyen1 = f"Zzqv Testkonum {741 + i}"
-        bilinmeyen2 = f"Qzxv Hayaliyer {851 + i}"
-
-        ekle(
-            "bulunamayan_yer",
-            (
-                f"Başlangıcım {bilinmeyen1}, "
-                f"hedefim {gorunen_ad(b)}. Nasıl giderim?"
-            ),
-            {"tur": "bilinmeyen", "ad": bilinmeyen1},
-            beklenen_durak(b),
-        )
-
-        ekle(
-            "bulunamayan_yer",
-            (
-                f"{gorunen_ad(a)} durağından "
-                f"{bilinmeyen2} konumuna gitmek istiyorum."
-            ),
-            beklenen_durak(a),
-            {"tur": "bilinmeyen", "ad": bilinmeyen2},
-        )
-
-    # 10 fazla genel yer sorgusu.
-    genel_yerler = [
-        "Malatya",
-        "Yeşilyurt",
-        "Battalgazi",
-        "Merkez",
-        "Türkiye",
-    ]
-
-    for i, yer in enumerate(genel_yerler):
-        a = anahtarlar[i * 2 + 10]
-        b = anahtarlar[i * 2 + 11]
-
-        ekle(
-            "fazla_genel_yer",
-            (
-                f"Başlangıcım {yer}, "
-                f"varış yerim {gorunen_ad(b)}. Nasıl ulaşırım?"
-            ),
-            {"tur": "genel", "ad": yer},
-            beklenen_durak(b),
-        )
-
-        ekle(
-            "fazla_genel_yer",
-            (
-                f"{gorunen_ad(a)} durağından "
-                f"{yer} konumuna nasıl giderim?"
-            ),
-            beklenen_durak(a),
-            {"tur": "genel", "ad": yer},
-        )
-
-    if len(testler) != 100:
-        raise ValueError("Test sayısı 100 olmalı.")
-
-    if len({test["soru"] for test in testler}) != 100:
-        raise ValueError("Tekrarlanan sorgu bulundu.")
-
-    return testler
-
-
-def kabul_edilen_adlar(anahtar):
-    resmi_ad = DURAK_ADLARI[anahtar]
-
-    adlar = {
-        normalize(resmi_ad),
-        normalize(resmi_ad.replace("CAD.", "CADDESİ")),
-        normalize(resmi_ad.replace("CAD.", "CADDE")),
-    }
-
-    for yer, kisaltma, _ in KISALTMALAR:
-        if yer == anahtar:
-            adlar.add(normalize(kisaltma))
-
-    return sorted(adlar)
-
-
-def beklentileri_hazirla(testler):
-    if ALTIN_DOSYA.exists():
-        raise ValueError(
-            "Beklentiler dosyası zaten var. "
-            "Test sonucuna bakarak beklentilerin üzerine yazılmıyor."
-        )
-
-    # Mevcut projenin veritabanı bağlantısı.
-    # Burada uygulamanın durak_ara fonksiyonu kullanılmaz.
-    from db import baglanti_ac
-
-    with baglanti_ac() as baglanti:
-        satirlar = baglanti.execute(
-            """
-            SELECT durak_kodu, durak_adi
-            FROM duraklar
-            ORDER BY durak_kodu
-            """
-        ).fetchall()
-
-    katalog = {}
-
-    for kod, ad in satirlar:
-        temiz_ad = durak_adini_temizle(ad)
-        katalog.setdefault(temiz_ad, set()).add(str(kod))
-
-    yerler = {}
-    eksikler = []
-
-    for anahtar, resmi_ad in DURAK_ADLARI.items():
-        kodlar = katalog.get(normalize(resmi_ad), set())
-
-        if not kodlar:
-            eksikler.append(resmi_ad)
-
-        yerler[anahtar] = {
-            "resmi_ad": resmi_ad,
-            "kodlar": sorted(kodlar),
-            "kabul_edilen_adlar": kabul_edilen_adlar(anahtar),
-        }
-
-    # Bilinmeyen diye etiketlenen adların katalogda bulunmadığını kontrol et.
-    for test in testler:
-        for taraf in ("baslangic", "hedef"):
-            beklenti = test[taraf]
-
-            if (
-                beklenti["tur"] == "bilinmeyen"
-                and normalize(beklenti["ad"]) in katalog
-            ):
-                raise ValueError(
-                    "Bilinmeyen yer etiketi veritabanıyla çelişiyor: "
-                    + beklenti["ad"]
-                )
-
-    if eksikler:
-        raise ValueError(
-            "Şu etiketlenen durak adları veritabanında doğrulanamadı.\n"
-            "Test başlatılmadı; bu listeyi paylaş:\n- "
-            + "\n- ".join(eksikler)
-        )
-
-    veri = {
-        "surum": 1,
-        "test_seti_ozeti": ozet_degeri(testler),
-        "hazirlanma_zamani": datetime.now().isoformat(),
-        "yerler": yerler,
-        "testler": testler,
-    }
-
-    veri["icerik_ozeti"] = ozet_degeri(veri)
-    dosyaya_yaz(ALTIN_DOSYA, veri)
-
-    ozet_satirlari = [
-        "TESTTEN ÖNCE KONTROL EDİLECEK BEKLENTİLER",
-        "",
-    ]
-
-    for yer in yerler.values():
-        ozet_satirlari.append(
-            f"{yer['resmi_ad']} -> {', '.join(yer['kodlar'])}"
-        )
-
-    for test in testler:
-        ozet_satirlari.extend(
-            [
-                "",
-                f"{test['id']} [{test['kategori']}]",
-                test["soru"],
-                "Başlangıç: "
-                + json.dumps(test["baslangic"], ensure_ascii=False),
-                "Hedef: "
-                + json.dumps(test["hedef"], ensure_ascii=False),
-            ]
-        )
-
-    (KLASOR / "adres_testi_beklenti_ozeti.txt").write_text(
-        "\n".join(ozet_satirlari),
-        encoding="utf-8",
-    )
-
-    print("100 sorgunun beklentileri sabitlendi.")
-    print("API'ye henüz istek gönderilmedi.")
-    print("Önce adres_testi_beklenti_ozeti.txt dosyasını incele.")
-    print()
-    print("Kategori dağılımı:")
-
-    for kategori, sayi in Counter(
-        test["kategori"] for test in testler
-    ).items():
-        print(f"- {kategori}: {sayi}")
+def ad_normalize(ad):
+    if ad is None:
+        return ""
+    if not isinstance(ad, str):
+        raise ValueError("Anlaşılan yer metin veya null olmalı.")
+    ad = unicodedata.normalize("NFKD", ad.casefold().replace("ı", "i"))
+    ad = "".join(harf for harf in ad if not unicodedata.combining(harf))
+    ad = re.sub(r"[^a-z0-9]+", " ", ad).strip()
+    return re.sub(r"\s+(?:duragi|durak)$", "", ad)
 
 
 def tarafi_degerlendir(beklenti, yanit, yerler):
-    if not isinstance(yanit, dict):
-        raise ValueError("Başlangıç/hedef yanıtı nesne olmalı.")
-
-    eslesmeler = yanit.get("durak_eslesmeleri")
-
-    if not isinstance(eslesmeler, list):
-        raise ValueError("durak_eslesmeleri liste olmalı.")
-
-    gelen_kodlar = {
-        str(durak["durak_kodu"])
-        for durak in eslesmeler
-    }
-
-    anlasilan = yanit.get("anlasilan_yer")
-    cozum_turu = yanit.get("cozum_turu")
-    koordinat = yanit.get("adres_koordinati")
-    beklenen_kodlar = set()
+    if not isinstance(yanit, dict) or not isinstance(yanit.get("durak_eslesmeleri"), list):
+        raise ValueError("Yer veya durak eşleşmeleri geçersiz.")
+    bulunan = {str(satir["durak_kodu"]) for satir in yanit["durak_eslesmeleri"]}
+    anlasilan = yanit["anlasilan_yer"]
+    cozum = yanit["cozum_turu"]
+    koordinat = yanit["adres_koordinati"]
     tur = beklenti["tur"]
-
+    beklenen = set()
     if tur == "durak":
         yer = yerler[beklenti["yer"]]
-        beklenen_kodlar = set(yer["kodlar"])
-
-        temiz_anlasilan = normalize(anlasilan or "")
-        temiz_anlasilan = re.sub(
-            r"\s+(?:duragi|durak)$",
-            "",
-            temiz_anlasilan,
-        )
-
-        anlam_dogru = (
-            temiz_anlasilan in yer["kabul_edilen_adlar"]
-        )
-
-        eslesme_dogru = (
-            gelen_kodlar == beklenen_kodlar
-            and cozum_turu == "durak_eslesmesi"
-        )
-
-    elif tur == "eksik":
-        anlam_dogru = anlasilan is None or anlasilan == ""
-
-        eslesme_dogru = (
-            not gelen_kodlar
-            and koordinat is None
-            and cozum_turu == "bulunamadi"
-        )
-
+        beklenen = set(map(str, yer["kodlar"]))
+        kabul = {ad_normalize(ad) for ad in [yer["resmi_ad"], *yer["kabul_edilen_adlar"]]}
+        anlam = ad_normalize(anlasilan) in kabul
+        eslesme = cozum == "durak_eslesmesi" and bulunan == beklenen
     else:
-        anlam_dogru = (
-            normalize(anlasilan or "")
-            == normalize(beklenti["ad"])
+        anlam = (
+            anlasilan in (None, "") if tur == "eksik"
+            else ad_normalize(anlasilan) == ad_normalize(beklenti["ad"])
         )
-
-        beklenen_cozum = (
-            "yetersiz_bilgi"
-            if tur == "genel"
-            else "bulunamadi"
-        )
-
-        eslesme_dogru = (
-            not gelen_kodlar
-            and koordinat is None
-            and cozum_turu == beklenen_cozum
-        )
+        beklenen_cozum = "yetersiz_bilgi" if tur == "genel" else "bulunamadi"
+        eslesme = not bulunan and koordinat is None and cozum == beklenen_cozum
 
     return {
-        "beklenen": beklenti,
-        "anlasilan_yer": anlasilan,
-        "cozum_turu": cozum_turu,
-        "anlam_dogru": anlam_dogru,
-        "eslesme_dogru": eslesme_dogru,
-        "beklenen_kodlar": sorted(beklenen_kodlar),
-        "gelen_kodlar": sorted(gelen_kodlar),
-        "eksik_kodlar": sorted(beklenen_kodlar - gelen_kodlar),
-        "fazla_kodlar": sorted(gelen_kodlar - beklenen_kodlar),
-        "tp": len(beklenen_kodlar & gelen_kodlar),
-        "fp": len(gelen_kodlar - beklenen_kodlar),
-        "fn": len(beklenen_kodlar - gelen_kodlar),
+        "beklenen": beklenti, "anlasilan_yer": anlasilan, "cozum_turu": cozum,
+        "anlam_dogru": anlam, "eslesme_dogru": eslesme,
+        "beklenen_kodlar": sorted(beklenen), "bulunan_kodlar": sorted(bulunan),
+        "eksik_kodlar": sorted(beklenen - bulunan), "fazla_kodlar": sorted(bulunan - beklenen),
     }
-
-
-def yuzde(dogru, toplam):
-    if not toplam:
-        return None
-    return round(100 * dogru / toplam, 2)
 
 
 def sonuclari_ozetle(sonuclar):
-    toplam = len(sonuclar)
+    gecerli = [r for r in sonuclar if r["degerlendirildi"]]
+    n = len(gecerli)
 
-    degerlendirilenler = [
-        sonuc
-        for sonuc in sonuclar
-        if sonuc["degerlendirildi"]
-    ]
-
-    n = len(degerlendirilenler)
+    def yuzde(dogru, toplam=n):
+        return round(100 * dogru / toplam, 2) if toplam else None
 
     ozet = {
-        "toplam_sorgu": toplam,
-        "degerlendirilen_sorgu": n,
-        "teknik_hata": toplam - n,
+        "toplam_sorgu": len(sonuclar), "degerlendirilen_sorgu": n,
+        "teknik_hata": len(sonuclar) - n,
     }
-
-    for taraf in ("baslangic", "hedef"):
-        anlam_dogru = sum(
-            sonuc[taraf]["anlam_dogru"]
-            for sonuc in degerlendirilenler
-        )
-
-        eslesme_dogru = sum(
-            sonuc[taraf]["eslesme_dogru"]
-            for sonuc in degerlendirilenler
-        )
-
+    for taraf in TARAFLAR:
+        anlam = sum(r[taraf]["anlam_dogru"] for r in gecerli)
+        eslesme = sum(r[taraf]["eslesme_dogru"] for r in gecerli)
         ozet[taraf] = {
-            "anlam_dogru": anlam_dogru,
-            "anlam_yuzde": yuzde(anlam_dogru, n),
-            "eslesme_dogru": eslesme_dogru,
-            "eslesme_yuzde": yuzde(eslesme_dogru, n),
+            "anlam_dogru": anlam, "anlam_yuzde": yuzde(anlam),
+            "eslesme_dogru": eslesme, "eslesme_yuzde": yuzde(eslesme),
         }
 
-    birlikte_dogru = sum(
-        sonuc["baslangic"]["eslesme_dogru"]
-        and sonuc["hedef"]["eslesme_dogru"]
-        for sonuc in degerlendirilenler
-    )
-
-    tam_dogru = sum(
-        sonuc["tam_dogru"]
-        for sonuc in degerlendirilenler
-    )
-
-    bilinen_duraklar = [
-        sonuc[taraf]
-        for sonuc in degerlendirilenler
-        for taraf in ("baslangic", "hedef")
-        if sonuc[taraf]["beklenen"]["tur"] == "durak"
-    ]
-
-    tp = sum(x["tp"] for x in bilinen_duraklar)
-    fp = sum(x["fp"] for x in bilinen_duraklar)
-    fn = sum(x["fn"] for x in bilinen_duraklar)
-
+    iki_uc = sum(all(r[t]["eslesme_dogru"] for t in TARAFLAR) for r in gecerli)
+    tam = sum(r["tam_dogru"] for r in gecerli)
+    kontroller = [r[t] for r in gecerli for t in TARAFLAR if r[t]["beklenen_kodlar"]]
+    eksik = sum(len(t["eksik_kodlar"]) for t in kontroller)
+    fazla = sum(len(t["fazla_kodlar"]) for t in kontroller)
+    dogru = sum(len(t["beklenen_kodlar"]) for t in kontroller) - eksik
     ozet.update(
-        {
-            "iki_uc_eslesme_dogru": birlikte_dogru,
-            "iki_uc_eslesme_yuzde": yuzde(birlikte_dogru, n),
-            "tam_dogru_sorgu": tam_dogru,
-            "tam_dogru_yuzde": yuzde(tam_dogru, n),
-            "teknik_hatalar_dahil_basari_yuzde": yuzde(
-                tam_dogru,
-                toplam,
-            ),
-            "bilinen_durak_kodlari": {
-                "kontrol_sayisi": len(bilinen_duraklar),
-                "dogru_kod": tp,
-                "fazla_kod": fp,
-                "eksik_kod": fn,
-                "precision_yuzde": yuzde(tp, tp + fp),
-                "recall_yuzde": yuzde(tp, tp + fn),
-            },
-        }
+        iki_uc_eslesme_dogru=iki_uc, iki_uc_eslesme_yuzde=yuzde(iki_uc),
+        tam_dogru_sorgu=tam, tam_dogru_yuzde=yuzde(tam),
+        teknik_hatalar_dahil_basari_yuzde=yuzde(tam, len(sonuclar)),
+        bilinen_durak_kodlari={
+            "kontrol_sayisi": len(kontroller), "dogru_kod": dogru,
+            "fazla_kod": fazla, "eksik_kod": eksik,
+            "precision_yuzde": yuzde(dogru, dogru + fazla),
+            "recall_yuzde": yuzde(dogru, dogru + eksik),
+        },
     )
-
     return ozet
 
+def json_oku(yol):
+    return json.loads(yol.read_text(encoding="utf-8-sig"))
 
-def testleri_calistir(testler):
-    if not ALTIN_DOSYA.exists():
-        raise ValueError(
-            "Önce --hazirla komutunu çalıştırmalısın."
-        )
 
-    altin = json.loads(
-        ALTIN_DOSYA.read_text(encoding="utf-8")
-    )
+def satirlari_oku(yol):
+    if not yol.exists():
+        return []
+    return [
+        json.loads(satir)
+        for satir in yol.read_text(encoding="utf-8-sig").splitlines()
+        if satir.strip()
+    ]
 
-    kayitli_ozet = altin["icerik_ozeti"]
 
-    ozetsiz_veri = {
-        anahtar: deger
-        for anahtar, deger in altin.items()
-        if anahtar != "icerik_ozeti"
-    }
+def kota_hatasi(sonuc):
+    return sonuc.get("http_durumu") == 429 or sonuc.get("teknik_hata") == "HTTP 429"
 
-    if (
-        ozet_degeri(ozetsiz_veri) != kayitli_ozet
-        or altin["test_seti_ozeti"] != ozet_degeri(testler)
-    ):
-        raise ValueError(
-            "Test seti veya beklentiler sonradan değişmiş. "
-            "Aynı deney olarak karşılaştırılamaz."
-        )
 
-    api_adresi = "http://127.0.0.1:8000"
+def kota_bekleme(sonuc, tekrar, aralik):
+    bekleme = max(aralik, min(1800, 60 * 2 ** min(tekrar - 1, 5)))
+    baslik = sonuc.get("retry_after")
+    if baslik:
+        try:
+            saniye = int(baslik) if baslik.isdecimal() else (
+                parsedate_to_datetime(baslik).timestamp() - time.time()
+            )
+            bekleme = max(bekleme, saniye)
+        except (ValueError, TypeError, OverflowError, OSError):
+            pass
+    return bekleme
 
+
+def sorgula(url, sorgu, yerler):
+    sonuc = {k: sorgu[k] for k in ("id", "kategori", "soru")}
+    sonuc.update(degerlendirildi=False, teknik_hata=None, ham_yanit=None)
     try:
-        saglik = requests.get(
-            api_adresi + "/saglik",
-            timeout=10,
+        istek = Request(
+            url, data=json.dumps({"metin": sorgu["soru"]}, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"}, method="POST",
         )
-        saglik.raise_for_status()
-    except requests.RequestException as hata:
-        raise ValueError(
-            "Yerel API'ye erişilemedi. "
-            "Önce FastAPI sunucusunu çalıştır."
-        ) from hata
+        with urlopen(istek, timeout=60) as cevap:
+            sonuc["http_durumu"] = cevap.status
+            veri = json.load(cevap)
+        sonuc["ham_yanit"] = veri
+        if not isinstance(veri, dict) or not isinstance(veri.get("basarili"), bool):
+            raise ValueError("basarili alanı geçersiz.")
 
-    zaman = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    sonuc_klasoru = KLASOR / f"adres_test_sonuclari_{zaman}"
-    sonuc_klasoru.mkdir()
+        taraflar = ("baslangic", "hedef")
+        for taraf in taraflar:
+            sonuc[taraf] = tarafi_degerlendir(sorgu[taraf], veri[taraf], yerler)
 
-    dosyaya_yaz(
-        sonuc_klasoru / "deney_bilgisi.json",
-        {
-            "zaman": datetime.now().isoformat(),
-            "test_seti_ozeti": altin["test_seti_ozeti"],
-            "beklenti_ozeti": kayitli_ozet,
-            "api": api_adresi + "/adres-coz",
-            "yeniden_deneme": 0,
-            "istekler_arasi_saniye": 2,
-            "aciklama": (
-                "Adres çıkarımı ve durak eşleştirme testi. "
-                "Rota veya geocoding doğruluğu ölçümü değildir."
-            ),
-        },
-    )
+        beklenen_basarili = all(sorgu[t]["tur"] == "durak" for t in taraflar)
+        sonuc["basarili_alani_dogru"] = veri["basarili"] == beklenen_basarili
+        sonuc["tam_dogru"] = sonuc["basarili_alani_dogru"] and all(
+            sonuc[t]["anlam_dogru"] and sonuc[t]["eslesme_dogru"] for t in taraflar
+        )
+        sonuc["degerlendirildi"] = True
 
-    sonuclar = []
+    except HTTPError as hata:
+        sonuc["http_durumu"] = hata.code
+        sonuc["teknik_hata"] = f"HTTP {hata.code}"
+        if hata.headers is not None and hata.headers.get("Retry-After"):
+            sonuc["retry_after"] = hata.headers["Retry-After"].strip()
+        with hata:
+            sonuc["hata_aciklamasi"] = hata.read(1000).decode("utf-8", errors="replace")
+    except (URLError, OSError) as hata:
+        sonuc["teknik_hata"] = type(hata).__name__
+        sonuc["beklemede"] = True
+    except (ValueError, TypeError, KeyError) as hata:
+        sonuc["teknik_hata"] = "Yanıt şeması hatası: " + str(hata)
 
-    with requests.Session() as oturum:
-        for sira, test in enumerate(altin["testler"], start=1):
-            sonuc = {
-                "id": test["id"],
-                "kategori": test["kategori"],
-                "soru": test["soru"],
-                "degerlendirildi": False,
-                "teknik_hata": None,
-                "ham_yanit": None,
-            }
+    return sonuc
 
-            try:
-                cevap = oturum.post(
-                    api_adresi + "/adres-coz",
-                    json={"metin": test["soru"]},
-                    timeout=60,
-                )
+def koordinat_cifti(veri, enlem="enlem", boylam="boylam"):
+    try:
+        a, b = float(veri[enlem]), float(veri[boylam])
+        if -90 <= a <= 90 and -180 <= b <= 180:
+            return a, b
+    except (KeyError, ValueError, TypeError, OverflowError):
+        pass
+    return None
 
-                sonuc["http_durumu"] = cevap.status_code
 
-                if cevap.status_code != 200:
-                    sonuc["teknik_hata"] = (
-                        f"HTTP {cevap.status_code}"
-                    )
-                    sonuc["hata_aciklamasi"] = cevap.text[:1000]
+def mesafe_m(a, b):
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = (math.sin((lat2 - lat1) / 2) ** 2
+         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
+    return 6371008.8 * 2 * math.asin(math.sqrt(min(1.0, max(0.0, h))))
 
-                else:
-                    veri = cevap.json()
-                    sonuc["ham_yanit"] = veri
 
-                    if not isinstance(
-                        veri.get("basarili"), bool
-                    ):
-                        raise ValueError(
-                            "Yanıtta basarili alanı yok veya boolean değil."
-                        )
+def json_nesneleri(veri):
+    if isinstance(veri, dict):
+        yield veri
+        for deger in veri.values():
+            yield from json_nesneleri(deger)
+    elif isinstance(veri, list):
+        for deger in veri:
+            yield from json_nesneleri(deger)
 
-                    for taraf in ("baslangic", "hedef"):
-                        sonuc[taraf] = tarafi_degerlendir(
-                            test[taraf],
-                            veri[taraf],
-                            altin["yerler"],
-                        )
 
-                    beklenen_basarili = all(
-                        test[taraf]["tur"] == "durak"
-                        for taraf in ("baslangic", "hedef")
-                    )
+def koordinat_hazirla(ham_klasor):
+    hedefler = {kod for kod, _, _ in KOORDINAT_DURAKLARI}
+    kaynaklar = {}
+    for yol in sorted(ham_klasor.rglob("*.json")):
+        for kayit in json_nesneleri(json_oku(yol)):
+            kod = str(kayit.get("id", ""))
+            if kod not in hedefler:
+                continue
+            nokta = koordinat_cifti(kayit, "latitude", "longitude")
+            if nokta is None:
+                continue
+            if kod in kaynaklar and mesafe_m(kaynaklar[kod][0], nokta) > 10:
+                raise ValueError(f"MOTAŞ kaynaklarında {kod} için 10 m üstü fark var; referans doğrulanmalı.")
+            kaynaklar.setdefault(kod, (nokta, yol.relative_to(ham_klasor).as_posix()))
+    eksik = hedefler - kaynaklar.keys()
+    if eksik:
+        raise ValueError(f"{ham_klasor} içindeki ham MOTAŞ JSON'larında eksik duraklar: {', '.join(sorted(eksik))}")
 
-                    sonuc["basarili_alani_dogru"] = (
-                        veri["basarili"] == beklenen_basarili
-                    )
+    adresler = [
+        {"id": kod, "grup": "durak", "dogru_ad": ad, "hatali_ad": yazim,
+         "referans": list(kaynaklar[kod][0]), "kaynak": "MOTAŞ: " + kaynaklar[kod][1]}
+        for kod, ad, yazim in KOORDINAT_DURAKLARI
+    ] + [
+        {"id": f"A{i}", "grup": "durak_disi_adres", "dogru_ad": ad, "hatali_ad": yazim,
+         "referans": [enlem, boylam], "kaynak": url}
+        for i, (ad, yazim, enlem, boylam, url) in enumerate(KOORDINAT_ADRESLERI, 1)
+    ]
+    sorgular = []
+    for i in range(10):
+        a, b = adresler[i], adresler[10 + i]
+        if i % 2:
+            a, b = b, a
+        sorgular.append({
+            "id": f"K{i + 1:02}", "baslangic": a, "hedef": b,
+            "metin": f"{a['hatali_ad']} konumundan {b['hatali_ad']} konumuna gitmek istiyorum.",
+        })
+    veri = {"surum": 1, "esik_metre": KOORDINAT_ESIGI, "hedef_yuzde": KOORDINAT_HEDEFI,
+            "aday_kurali": "Adres koordinatı; yoksa API'nin ilk durak adayı",
+            "sorgular": sorgular}
+    veri["icerik_ozeti"] = ozet_degeri(veri)
+    return veri
 
-                    sonuc["tam_dogru"] = (
-                        sonuc["basarili_alani_dogru"]
-                        and all(
-                            sonuc[taraf]["anlam_dogru"]
-                            and sonuc[taraf]["eslesme_dogru"]
-                            for taraf in ("baslangic", "hedef")
-                        )
-                    )
+def koordinat_olc(yanit, beklenen, esik):
+    if beklenen.get("referans_durumu") == "dogrulanamadi":
+        return {**beklenen, "durum": "referans_dogrulanamadi"}
 
-                    sonuc["degerlendirildi"] = True
+    if not isinstance(yanit, dict) or not isinstance(yanit.get("durak_eslesmeleri"), list):
+        raise ValueError("Beklenen adres yanıtı alınamadı.")
+    adaylar = yanit["durak_eslesmeleri"]
+    nokta = koordinat_cifti(yanit.get("adres_koordinati"))
+    if nokta is None and adaylar:
+        nokta = koordinat_cifti(adaylar[0])
+    uzaklik = mesafe_m(beklenen["referans"], nokta) if nokta is not None else None
+    durum = ("koordinat_yok" if uzaklik is None else "dogru" if uzaklik <= esik else "yanlis_konum")
+    return {**beklenen, "durum": durum, "donen_koordinat": nokta,
+            "mesafe_metre": round(uzaklik, 2) if uzaklik is not None else None,
+            "anlasilan_yer": yanit.get("anlasilan_yer"), "cozum_turu": yanit.get("cozum_turu")}
 
-            except requests.RequestException as hata:
-                sonuc["teknik_hata"] = type(hata).__name__
 
-            except (ValueError, KeyError, TypeError) as hata:
-                sonuc["teknik_hata"] = (
-                    "YanitSemasiHatasi: " + str(hata)
-                )
+def koordinat_ozet(veri, kayitlar):
+    def grup_ozeti(grup=None):
+        c = Counter()
+        for sorgu in veri["sorgular"]:
+            kayit = kayitlar.get(sorgu["id"], {})
+            for taraf in TARAFLAR:
+                if grup is None or sorgu[taraf]["grup"] == grup:
+                    if sorgu[taraf].get("referans_durumu") == "dogrulanamadi":
+                        c["referans_dogrulanamadi"] += 1
+                    else:
+                        c[kayit.get(taraf, {}).get("durum", kayit.get("durum", "bekliyor"))] += 1
+        toplam = sum(c.values())
+        degerlendirilen = c["dogru"] + c["yanlis_konum"] + c["koordinat_yok"]
+        oran = 100 * c["dogru"] / degerlendirilen if degerlendirilen else None
+        return {"toplam_adres": toplam, "dogru": c["dogru"], "yanlis_konum": c["yanlis_konum"],
+                "koordinat_yok": c["koordinat_yok"], "teknik_hata": c["teknik_hata"],
+                "kota_bekleyen": c["kota_bekleyen"], "henuz_calismayan": c["bekliyor"],
+                "referans_dogrulanamadi": c["referans_dogrulanamadi"],
+                "gecerli_referansli_adres": toplam - c["referans_dogrulanamadi"],
+                "degerlendirilen": degerlendirilen,
+                "degerlendirilenlerde_dogruluk_yuzde": round(oran, 2) if oran is not None else None,
+                "gecerli_alt_kumede_hedef_karsilandi": (
+                    oran >= veri["hedef_yuzde"]
+                    if degerlendirilen and degerlendirilen == toplam - c["referans_dogrulanamadi"] else None
+                ),
+                "hedef_karsilandi": oran >= veri["hedef_yuzde"] if degerlendirilen == toplam else None}
+    return {"esik_metre": veri["esik_metre"], "hedef_yuzde": veri["hedef_yuzde"],
+            "genel": grup_ozeti(),
+            "gruplar": {g: grup_ozeti(g) for g in ("durak", "durak_disi_adres")},
+            "sonuclar": kayitlar}
 
-            sonuclar.append(sonuc)
-
-            # Her sonuç hemen kaydedilir.
-            with (sonuc_klasoru / "detaylar.jsonl").open(
-                "a",
-                encoding="utf-8",
-            ) as dosya:
-                dosya.write(
-                    json.dumps(sonuc, ensure_ascii=False) + "\n"
-                )
-
-            if not sonuc["degerlendirildi"]:
-                durum = "TEKNİK HATA"
-            elif sonuc["tam_dogru"]:
-                durum = "DOĞRU"
-            else:
-                durum = "YANLIŞ"
-
-            print(
-                f"[{sira:03}/100] "
-                f"{test['id']} [{test['kategori']}] {durum}",
-                flush=True,
-            )
-
-            if sira < len(altin["testler"]):
-                time.sleep(2)
-
-    kategoriler = sorted(
-        {sonuc["kategori"] for sonuc in sonuclar}
-    )
-
-    rapor = {
-        "genel": sonuclari_ozetle(sonuclar),
-        "kategoriler": {
-            kategori: sonuclari_ozetle(
-                [
-                    sonuc
-                    for sonuc in sonuclar
-                    if sonuc["kategori"] == kategori
-                ]
-            )
-            for kategori in kategoriler
-        },
+def koordinat_v2_hazirla(kok):
+    eski = kok / "akilli-ulasim-koordinat-testi" / "referanslar.json"
+    hedef = kok / "akilli-ulasim-koordinat-testi-v2"
+    hedef.mkdir(parents=True, exist_ok=True)
+    yol = hedef / "referanslar.json"
+    if yol.exists():
+        return hedef
+    veri = json_oku(eski)
+    onceki_imza = veri["icerik_ozeti"]
+    if onceki_imza != ozet_degeri({k: v for k, v in veri.items() if k != "icerik_ozeti"}):
+        raise ValueError("Eski referansların bütünlüğü doğrulanamadı.")
+    veri.pop("icerik_ozeti")
+    veri.update(surum=2, onceki_referans_ozeti=onceki_imza,
+                degisiklik_notu="A1/A2 bağımsız kaynakla düzeltildi. A3 alan/nokta belirsizliği; A4 konum doğrulanamadı. Eski dosyalar korunur.")
+    duzeltmeler = {
+        "A1": ([38.3525848, 38.3084068], "https://kulturenvanteri.com/yer/tashoran-kilisesi/"),
+        "A2": ([38.5768013, 37.4921989], "https://kulturenvanteri.com/yer/somuncu-baba-turbesi-darende/"),
     }
+    for sorgu in veri["sorgular"]:
+        for t in TARAFLAR:
+            adres = sorgu[t]
+            if adres["id"] in duzeltmeler:
+                adres["onceki_referans"] = adres["referans"]
+                adres["referans"], adres["kaynak"] = duzeltmeler[adres["id"]]
+            if adres["id"] in ("A3", "A4"):
+                adres["referans_durumu"] = "dogrulanamadi"
+                adres["dislama_nedeni"] = (
+                    "Geniş alan için 50 m ile karşılaştırılacak hedef nokta kesinleşmedi."
+                    if adres["id"] == "A3" else "Sokağın kesin konumu doğrulanamadı."
+                )
+    veri["icerik_ozeti"] = ozet_degeri(veri)
+    dosyaya_yaz(yol, veri)
+    return hedef
 
-    dosyaya_yaz(
-        sonuc_klasoru / "ozet.json",
-        rapor,
-    )
+def koordinat_modu(args, klasor):
+    klasor.mkdir(parents=True, exist_ok=True)
+    referans_yolu = klasor / "referanslar.json"
+    if args.koordinat_hazirla and not referans_yolu.exists():
+        dosyaya_yaz(referans_yolu, koordinat_hazirla(args.veri_klasoru))
+    if not referans_yolu.exists():
+        raise ValueError("Önce --koordinat-hazirla ile referansları sabitle.")
+    veri = json_oku(referans_yolu)
+    imza = veri["icerik_ozeti"]
+    if imza != ozet_degeri({k: v for k, v in veri.items() if k != "icerik_ozeti"}):
+        raise ValueError("Sabitlenmiş koordinat referansları değişmiş.")
+    print("Referanslar:", referans_yolu, flush=True)
+    if args.koordinat_hazirla:
+        print("20 adres sabit; 10 sorgu. Eşik: 50 m. Hazırlık API isteği göndermez.")
+        return
 
-    print("\n--- TEST SONUCU ---")
-    print(
-        json.dumps(
-            rapor["genel"],
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
-    print("\nSonuç klasörü:", sonuc_klasoru)
-    print(
-        "\nBu sonuçlar rota veya geocoding koordinat "
-        "doğruluğunu göstermez."
-    )
+    kayit_yolu = klasor / "sonuclar.json"
+    ozet_yolu = klasor / "ozet.json"
+    sonuc = json_oku(kayit_yolu) if kayit_yolu.exists() else {"referans_ozeti": imza, "kayitlar": {}}
+    if sonuc["referans_ozeti"] != imza:
+        raise ValueError("Koordinat sonuçları başka bir referans setine ait.")
+    kayitlar = sonuc["kayitlar"]
+    bekleyen = [s for s in veri["sorgular"]
+                if kayitlar.get(s["id"], {}).get("durum") != "degerlendirildi"]
+    try:
+        for i, sorgu in enumerate(bekleyen):
+            istek = Request(KOORDINAT_URL,
+                            data=json.dumps({
+                                "metin": sorgu["metin"],
+                                **({f"{t}_turu": "durak" if sorgu[t]["grup"] == "durak" else "adres"
+                                    for t in TARAFLAR} if veri.get("surum") == 2 else {}),
+                            }, ensure_ascii=False).encode("utf-8"),
+                            headers={"Content-Type": "application/json; charset=utf-8"}, method="POST")
+            try:
+                with urlopen(istek, timeout=60) as cevap:
+                    yanit = json.load(cevap)
+                kayit = {t: koordinat_olc(yanit[t], sorgu[t], veri["esik_metre"]) for t in TARAFLAR}
+                kayit["durum"] = "degerlendirildi"
+            except HTTPError as hata:
+                hata.close()
+                kayit = {"durum": "kota_bekleyen" if hata.code == 429 else "teknik_hata",
+                         "hata": f"HTTP {hata.code}"}
+            except (OSError, ValueError, KeyError, TypeError) as hata:
+                kayit = {"durum": "teknik_hata", "hata": type(hata).__name__}
+            kayitlar[sorgu["id"]] = kayit
+            dosyaya_yaz(kayit_yolu, sonuc)
+            if kayit["durum"] != "degerlendirildi":
+                print(f"{sorgu['id']}: {kayit['hata']}. Durdu; aynı komutla devam edebilirsin.")
+                break
+            print(f"{sorgu['id']}: " + ", ".join(f"{t}={kayit[t]['durum']}" for t in TARAFLAR), flush=True)
+            if i + 1 < len(bekleyen):
+                time.sleep(args.aralik if args.aralik is not None else 15)
+    except KeyboardInterrupt:
+        print("\nDurduruldu. Ölçülen adresler kaydedildi.")
+    finally:
+        ozet = koordinat_ozet(veri, kayitlar)
+        dosyaya_yaz(ozet_yolu, ozet)
+        genel = ozet["genel"]
+        print(f"Doğru: {genel['dogru']}/{genel['degerlendirilen']} ölçülen adres "
+              f"({genel['toplam_adres']} planlandı). Özet: {ozet_yolu}")
+        hedef = genel["hedef_karsilandi"]
+        if hedef is None:
+            print("Eksik ölçüm veya doğrulanmamış referans var. Tüm set için %85 kararı verilmedi.")
+        else:
+            print("%85 hedefi karşılandı." if hedef else "%85 hedefi karşılanmadı.")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="100 sorguluk adres çözümleme testi"
-    )
-
-    secim = parser.add_mutually_exclusive_group(required=True)
-    secim.add_argument("--hazirla", action="store_true")
-    secim.add_argument("--calistir", action="store_true")
-
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--aralik", type=float, help="İstekler arasındaki saniye")
+    parser.add_argument("--calistir", action="store_true", help="Testi başlat veya sürdür (varsayılan)")
+    mod = parser.add_mutually_exclusive_group()
+    mod.add_argument("--koordinat-hazirla", action="store_true", help="Referansları sabitle; API çağırma")
+    mod.add_argument("--koordinat", action="store_true", help="Koordinat testini başlat veya sürdür")
+    parser.add_argument("--deney", help="Koordinat ölçümü için ayrı kayıt adı")
+    parser.add_argument("--koordinat-v2", action="store_true", help="Eski sonuçları koruyarak düzeltilmiş koordinat deneyi")
+    parser.add_argument("--veri-klasoru", type=Path, default=Path(__file__).resolve().parent / "veriler",
+                        help="Orijinal MOTAŞ JSON klasörü (varsayılan: veriler)")
     args = parser.parse_args()
-    testler = testleri_olustur()
+    if args.aralik is not None and not 1 <= args.aralik <= 3600:
+        parser.error("--aralik 1 ile 3600 saniye arasında olmalı.")
+    if args.koordinat_v2 and not args.koordinat:
+        parser.error("--koordinat-v2 yalnız --koordinat ile kullanılır.")
+    if args.koordinat_hazirla or args.koordinat:
+        kok = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+        klasor = (koordinat_v2_hazirla(kok) if args.koordinat_v2
+                  else kok / "akilli-ulasim-koordinat-testi")
+        if args.deney:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", args.deney):
+                parser.error("--deney yalnız harf, sayı, alt çizgi veya tire içerebilir.")
+            yeni = klasor / ("deney-" + args.deney)
+            yeni.mkdir(parents=True, exist_ok=True)
+            kaynak = klasor / "referanslar.json"
+            hedef = yeni / "referanslar.json"
+            if not hedef.exists():
+                dosyaya_yaz(hedef, json_oku(kaynak))
+            elif json_oku(hedef)["icerik_ozeti"] != json_oku(kaynak)["icerik_ozeti"]:
+                raise ValueError("Bu deney adı başka referanslara ait; farklı ad kullan.")
+            klasor = yeni
+        koordinat_modu(args, klasor)
+        return
+    if not ALTIN_DOSYA.is_file():
+        raise FileNotFoundError(f"Mevcut beklenti dosyası bu konumda bulunamadı: {ALTIN_DOSYA}")
+
+    altin = json_oku(ALTIN_DOSYA)
+    icerik = {k: v for k, v in altin.items() if k != "icerik_ozeti"}
+    if ozet_degeri(icerik) != altin["icerik_ozeti"]:
+        raise ValueError("Beklenti dosyası değişmiş.")
+    if ozet_degeri(altin["testler"]) != altin["test_seti_ozeti"]:
+        raise ValueError("Sorgu seti değişmiş; eski sonuçlarla birleştirilemez.")
+
+    klasor = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "akilli-ulasim-test-100"
+    klasor.mkdir(parents=True, exist_ok=True)
+    meta_yolu = klasor / "adres_testi_deney.json"
+    if not meta_yolu.exists():
+        if (klasor / "adres_testi_denemeleri.jsonl").exists():
+            raise ValueError("Sonuçlar var, ancak deney bilgisi eksik. Kayıtlar korunuyor.")
+        dosyaya_yaz(meta_yolu, {
+            "test_seti_ozeti": altin["test_seti_ozeti"],
+            "beklenti_ozeti": altin["icerik_ozeti"],
+            "api": "http://127.0.0.1:8000/adres-coz",
+            "istekler_arasi_saniye": args.aralik if args.aralik is not None else 15.0,
+        })
+
+    meta = json_oku(meta_yolu)
+    if (meta["test_seti_ozeti"] != altin["test_seti_ozeti"]
+            or meta["beklenti_ozeti"] != altin["icerik_ozeti"]):
+        raise ValueError("Sabit klasördeki deney mevcut beklentilerle uyuşmuyor.")
+
+    url = "http://127.0.0.1:8000/adres-coz"
+    if meta["api"] != url:
+        raise ValueError("İlk test farklı bir API adresinde çalıştırılmış.")
+
+    aralik = args.aralik if args.aralik is not None else meta["istekler_arasi_saniye"]
+    if not 1 <= aralik <= 3600:
+        raise ValueError("--aralik 1 ile 3600 saniye arasında olmalı.")
+
+    tum_sorgular = altin["testler"]
+    indeks = {s["id"]: s for s in tum_sorgular}
+    if len(tum_sorgular) != 100 or len(indeks) != 100:
+        raise ValueError("Beklenen test setinde 100 farklı sorgu olmalı.")
+
+    devam_dosyasi = klasor / "adres_testi_denemeleri.jsonl"
+    denemeler = satirlari_oku(devam_dosyasi)
+    tamamlanan = {}
+    for kayit in denemeler:
+        sorgu = indeks.get(kayit["id"])
+        if sorgu is None or any(sorgu[k] != kayit[k] for k in ("kategori", "soru")):
+            raise ValueError("Bir kayıt sabitlenmiş sorgusuyla uyuşmuyor.")
+        if not (kota_hatasi(kayit) or kayit.get("beklemede")):
+            tamamlanan.setdefault(kayit["id"], kayit)
+
+    bekleyen = [s for s in tum_sorgular if s["id"] not in tamamlanan]
+    print("Sonuç klasörü:", klasor)
+    print(f"Korunan sonuç: {len(tamamlanan)}. Kalan: {len(bekleyen)}.", flush=True)
 
     try:
-        if args.hazirla:
-            beklentileri_hazirla(testler)
-        else:
-            testleri_calistir(testler)
+        if bekleyen:
+            try:
+                with urlopen("http://127.0.0.1:8000/saglik", timeout=10):
+                    pass
+            except OSError as hata:
+                raise ValueError("FastAPI sağlık kontrolü başarısız. Sunucuyu kontrol et: " + str(hata)) from hata
+            sira = 0
+            kota_tekrari = 0
+            while sira < len(bekleyen):
+                sorgu = bekleyen[sira]
+                sonuc = sorgula(url, sorgu, altin["yerler"])
+                sonuc["istek_araligi_saniye"] = aralik
+                with devam_dosyasi.open("a", encoding="utf-8") as dosya:
+                    dosya.write(json.dumps(sonuc, ensure_ascii=False) + "\n")
+                    dosya.flush()
+                    os.fsync(dosya.fileno())
+                denemeler.append(sonuc)
 
-    except (ValueError, FileNotFoundError) as hata:
-        print("\nİşlem durduruldu:")
-        print(hata)
-        raise SystemExit(1)
+                if kota_hatasi(sonuc):
+                    kota_tekrari += 1
+                    bekleme = kota_bekleme(sonuc, kota_tekrari, aralik)
+                    print(
+                        f"{sorgu['id']}: 429. {bekleme:.0f} saniye sonra otomatik tekrar denenecek.",
+                        flush=True,
+                    )
+                    time.sleep(bekleme)
+                    continue
+                if sonuc.get("beklemede"):
+                    print(f"{sorgu['id']}: API bağlantısı kesildi. Bu sorgu beklemede kaldı.")
+                    break
+
+                tamamlanan[sorgu["id"]] = sonuc
+                sira += 1
+                kota_tekrari = 0
+                durum = ("DOĞRU" if sonuc.get("tam_dogru") else
+                         "YANLIŞ" if sonuc["degerlendirildi"] else "TEKNİK HATA")
+                print(f"[{len(tamamlanan):03}/100] {sorgu['id']} {durum}", flush=True)
+                if sira < len(bekleyen):
+                    time.sleep(aralik)
+
+    except KeyboardInterrupt:
+        print("\nDurduruldu. Yazılan sonuçlar korundu.")
+    finally:
+        sonuclar = [tamamlanan[s["id"]] for s in tum_sorgular if s["id"] in tamamlanan]
+        ozet = {
+            "tam_test": len(sonuclar) == len(tum_sorgular),
+            "planlanan_sorgu": len(tum_sorgular),
+            "kalan_sorgu": len(tum_sorgular) - len(sonuclar),
+            "toplam_test_istegi": len(denemeler),
+            "kota_429_denemeleri": sum(kota_hatasi(r) for r in denemeler),
+            "deneme_hatalari": dict(Counter(
+                r["teknik_hata"] for r in denemeler if r.get("teknik_hata")
+            )),
+            "genel": sonuclari_ozetle(sonuclar),
+            "kategoriler": {
+                kategori: sonuclari_ozetle([
+                    r for r in sonuclar if r["kategori"] == kategori
+                ])
+                for kategori in sorted({r["kategori"] for r in sonuclar})
+            },
+            "not": "Kota duraklarından devam edilen test. Kota denemeleri ayrı sayılır.",
+        }
+        dosyaya_yaz(klasor / "adres_testi_ozet.json", ozet)
+        print(f"Tamamlanan: {len(sonuclar)}/100. Özet: {klasor / 'adres_testi_ozet.json'}")
+        if ozet["tam_test"]:
+            print("100 sorgu tamamlandı.")
+        else:
+            print("Bu kısmi sonuçtur. Aynı komutla kaldığın yerden devam edebilirsin.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError, KeyError, TypeError) as hata:
+        raise SystemExit(str(hata))

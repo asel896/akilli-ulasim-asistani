@@ -1,4 +1,5 @@
 import re
+from typing import Literal
 from geocoding import adresi_koordinata_cevir, GeocodingError
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -54,6 +55,8 @@ class YolTarifiIstegi(BaseModel):
 
 class AdresCozIstegi(BaseModel):
     metin: str
+    baslangic_turu: Literal["otomatik", "durak", "adres"] = "otomatik"
+    hedef_turu: Literal["otomatik", "durak", "adres"] = "otomatik"
 
 
 GUNLER = [
@@ -65,7 +68,6 @@ GUNLER = [
     "Cumartesi",
     "Pazar",
 ]
-
 
 def gunu_duzenle(girilen_gun):
     if not girilen_gun:
@@ -137,7 +139,6 @@ def durak_eslesmelerini_jsona_cevir(durak_satirlari, aranan_yer):
 
     return sonuc
 
-
 def adresi_geocode_et(adres):
     if not adres or not adres.strip():
         return None, None
@@ -186,6 +187,71 @@ def saglik_kontrolu():
     return {"durum": "çalışıyor"}
 
 
+def konum_turunu_belirle(yer, tercih="otomatik"):
+    if tercih != "otomatik":
+        return tercih
+    temiz = metni_normalize_et(yer or "")
+    if re.search(r"\b(durak\w*|durag\w*)\b", temiz):
+        return "durak"
+
+    if re.search(
+        r"\b(kilise\w*|muze\w*|turbe\w*|kulliye\w*|hoyuk\w*|"
+        r"dershane\w*|otel\w*|hastane\w*|universite\w*|fakulte\w*|"
+        r"cadde\w*|sokak\w*|mahallesi|bulvari)\b", temiz
+    ):
+        return "adres"
+    return "durak"
+
+
+def konumu_coz(yer, tercih="otomatik"):
+    tur = konum_turunu_belirle(yer, tercih)
+    sonuc = {
+        "anlasilan_yer": yer,
+        "eslesme_sayisi": 0,
+        "birden_fazla_eslesme": False,
+        "konum_turu": tur,
+        "cozum_turu": "bulunamadi",
+        "adres_koordinati": None,
+        "durak_eslesmeleri": [],
+        "ayni_adli_duraklar": [],
+        "geocoding_hatasi": None,
+    }
+    if not yer:
+        return sonuc, "Yer bilgisi anlaşılamadı."
+    if yer_cok_genel_mi(yer):
+        sonuc["cozum_turu"] = "yetersiz_bilgi"
+        return sonuc, "Yer çok genel. Cadde, mahalle veya durak adı belirt."
+
+    duraklar = durak_eslesmelerini_jsona_cevir(durak_ara(yer), yer)
+    if tur == "adres":
+       
+        sonuc["ayni_adli_duraklar"] = duraklar
+    else:
+        sonuc["durak_eslesmeleri"] = duraklar
+        sonuc["eslesme_sayisi"] = len(duraklar)
+        sonuc["birden_fazla_eslesme"] = len(duraklar) > 1
+        if duraklar:
+            sonuc["cozum_turu"] = "durak_eslesmesi"
+            return sonuc, None
+
+    if tur == "durak":
+        return sonuc, "İstenen durak bulunamadı; adres koordinatı durak yerine kullanılmadı."
+
+    koordinat, hata = adresi_geocode_et(yer)
+    sonuc["geocoding_hatasi"] = hata
+    if hata:
+        sonuc["cozum_turu"] = "servis_hatasi"
+        return sonuc, "Koordinat arama servisine ulaşılamadı."
+    if koordinat is not None:
+        sonuc["adres_koordinati"] = koordinat
+        sonuc["cozum_turu"] = "geocoding"
+        return sonuc, None
+    return sonuc, (
+        "Adres koordinatı bulunamadı. Aynı adlı duraklar adresin konumu değildir."
+        if tur == "adres" and duraklar
+        else "Durak eşleşmesi veya adres koordinatı bulunamadı."
+    )
+
 @app.post("/adres-coz")
 def adres_coz_api(istek: AdresCozIstegi):
     metin = istek.metin.strip()
@@ -199,6 +265,17 @@ def adres_coz_api(istek: AdresCozIstegi):
     try:
         adresler = adresleri_coz(metin)
     except Exception as hata:
+        kod = getattr(hata, "code", None)
+        if kod is None:
+            kod = getattr(hata, "status_code", None)
+
+        if str(kod) == "429":
+            print("Gemini 429:", getattr(hata, "response_json", None) or getattr(hata, "details", None) or str(hata), flush=True)
+            raise HTTPException(
+                status_code=429,
+                detail="Adres çözümleme servisi kullanım sınırına ulaştı.",
+            ) from hata
+
         raise HTTPException(
             status_code=503,
             detail=(
@@ -207,102 +284,23 @@ def adres_coz_api(istek: AdresCozIstegi):
             ),
         ) from hata
 
-    baslangic_yeri = adresler.get("baslangic")
-    hedef_yeri = adresler.get("hedef")
-
-    baslangic_yeri_genel = yer_cok_genel_mi(baslangic_yeri)
-    hedef_yeri_genel = yer_cok_genel_mi(hedef_yeri)
-
-    baslangic_duraklari = (
-        durak_ara(baslangic_yeri)
-        if baslangic_yeri and not baslangic_yeri_genel
-        else []
+    baslangic, baslangic_hatasi = konumu_coz(
+        adresler.get("baslangic"), istek.baslangic_turu
     )
-    hedef_duraklari = (
-        durak_ara(hedef_yeri)
-        if hedef_yeri and not hedef_yeri_genel
-        else []
+    hedef, hedef_hatasi = konumu_coz(
+        adresler.get("hedef"), istek.hedef_turu
     )
-
-    baslangic_koordinati = None
-    if (
-        baslangic_yeri
-        and not baslangic_yeri_genel
-        and not baslangic_duraklari
-    ):
-        baslangic_koordinati, _ = adresi_geocode_et(baslangic_yeri)
-
-    hedef_koordinati = None
-    if hedef_yeri and not hedef_yeri_genel and not hedef_duraklari:
-        hedef_koordinati, _ = adresi_geocode_et(hedef_yeri)
-
     hatalar = []
-
-    if not baslangic_yeri:
-        hatalar.append("Başlangıç yeri anlaşılamadı.")
-    elif baslangic_yeri_genel:
-        hatalar.append(
-            "Başlangıç yeri çok genel. Cadde, mahalle veya durak adı belirt."
-        )
-    elif not baslangic_duraklari and not baslangic_koordinati:
-        hatalar.append(
-            "Başlangıç yeri için durak eşleşmesi veya koordinat bulunamadı."
-        )
-
-    if not hedef_yeri:
-        hatalar.append("Hedef yeri anlaşılamadı.")
-    elif hedef_yeri_genel:
-        hatalar.append(
-            "Hedef yeri çok genel. Cadde, mahalle veya durak adı belirt."
-        )
-    elif not hedef_duraklari and not hedef_koordinati:
-        hatalar.append(
-            "Hedef yeri için durak eşleşmesi veya koordinat bulunamadı."
-        )
-
-    baslangic_cozum_turu = "bulunamadi"
-    if baslangic_yeri_genel:
-        baslangic_cozum_turu = "yetersiz_bilgi"
-    elif baslangic_duraklari:
-        baslangic_cozum_turu = "durak_eslesmesi"
-    elif baslangic_koordinati:
-        baslangic_cozum_turu = "geocoding"
-
-    hedef_cozum_turu = "bulunamadi"
-    if hedef_yeri_genel:
-        hedef_cozum_turu = "yetersiz_bilgi"
-    elif hedef_duraklari:
-        hedef_cozum_turu = "durak_eslesmesi"
-    elif hedef_koordinati:
-        hedef_cozum_turu = "geocoding"
-
+    if baslangic_hatasi:
+        hatalar.append("Başlangıç: " + baslangic_hatasi)
+    if hedef_hatasi:
+        hatalar.append("Hedef: " + hedef_hatasi)
     return {
-        "basarili": len(hatalar) == 0,
-        "baslangic": {
-            "anlasilan_yer": baslangic_yeri,
-            "eslesme_sayisi": len(baslangic_duraklari),
-            "birden_fazla_eslesme": len(baslangic_duraklari) > 1,
-            "cozum_turu": baslangic_cozum_turu,
-            "adres_koordinati": baslangic_koordinati,
-            "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
-                baslangic_duraklari,
-                baslangic_yeri,
-            ),
-        },
-        "hedef": {
-            "anlasilan_yer": hedef_yeri,
-            "eslesme_sayisi": len(hedef_duraklari),
-            "birden_fazla_eslesme": len(hedef_duraklari) > 1,
-            "cozum_turu": hedef_cozum_turu,
-            "adres_koordinati": hedef_koordinati,
-            "durak_eslesmeleri": durak_eslesmelerini_jsona_cevir(
-                hedef_duraklari,
-                hedef_yeri,
-            ),
-        },
+        "basarili": not hatalar,
+        "baslangic": baslangic,
+        "hedef": hedef,
         "hatalar": hatalar,
     }
-
 
 @app.post("/yol-tarifi")
 def yol_tarifi(istek: YolTarifiIstegi):
@@ -331,6 +329,16 @@ def yol_tarifi(istek: YolTarifiIstegi):
     try:
         adresler = adresleri_coz(soru)
     except Exception as hata:
+        kod = getattr(hata, "code", None)
+        if kod is None:
+            kod = getattr(hata, "status_code", None)
+
+        if str(kod) == "429":
+            raise HTTPException(
+                status_code=429,
+                detail="Adres çözümleme servisi kullanım sınırına ulaştı.",
+            ) from hata
+
         raise HTTPException(
             status_code=503,
             detail=(
@@ -467,7 +475,7 @@ def yol_tarifi(istek: YolTarifiIstegi):
             "secenekler": [],
         }
 
-    secenekler = []
+    secenekler = []  
 
     for secenek in aktarmali_hatlar:
         (

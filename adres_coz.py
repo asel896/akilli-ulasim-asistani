@@ -57,7 +57,13 @@ Sen Malatya'daki toplu taşıma taleplerinden başlangıç ve hedef
 bilgilerini çıkaran bir yardımcı asistansın.
 
 Kurallar:
-- Kullanıcının belirttiği yer adlarını koru.
+- Yerlerin kimliğini koru; açık ve tek anlamlı harf eksiltme, harf
+  tekrarı veya harf sırası hatalarını Türkçe doğru yazıma dönüştür.
+- Bu kural yalnız duraklara değil cadde, sokak, kurum ve yapı adlarına da uygulanır.
+- Belirsiz özel adları tahmin etme; doğruluğundan emin değilsen olduğu gibi koru.
+- Yer adını daha bilinen başka bir kurum ya da sözcükle değiştirme.
+- İlçe, mahalle veya kapı numarası ekleme. Kullanıcının verdiği
+  ilçe, mahalle ve numaraları koru.
 - Durak adındaki sayıları mutlaka koru. Numaralı duraklar farklı yerlerdir.
 - Kısaltma açarken veya yazım hatası düzeltirken yerin kimliğini değiştirme.
 - Anlamından emin olmadığın bir yer adını başka bir yer adıyla değiştirme.
@@ -159,8 +165,6 @@ olarak ele al.
     }
 
 
-
-
 def metni_normalize_et(metin):
     metin = metin.casefold().replace("ı", "i")
     metin = unicodedata.normalize("NFKD", metin)
@@ -179,55 +183,6 @@ def durak_adini_sadeleştir(durak_adi):
 def durak_ara(yer_adi):
     from durak_eslestirme import durak_ara as eslestir
     return eslestir(yer_adi)
-
-    def karsilastirma_icin_temizle(metin):
-        temiz_metin = durak_adini_sadeleştir(metin)
-
-        kelimeler = [
-            kelime
-            for kelime in temiz_metin.split()
-            if not kelime.startswith(("durak", "durag"))
-        ]
-
-        return " ".join(kelimeler)
-
-    aranan = karsilastirma_icin_temizle(yer_adi)
-
-    if not aranan:
-        return []
-   
-
-    temiz_duraklar = [
-        (durak, karsilastirma_icin_temizle(durak[1]))
-        for durak in duraklar
-    ]
-
-    tam_eslesenler = [
-        durak
-        for durak, temiz_ad in temiz_duraklar
-        if temiz_ad == aranan
-    ]
-
-    if tam_eslesenler:
-        return tam_eslesenler[:10]
-
-    baslangicta_eslesenler = [
-        durak
-        for durak, temiz_ad in temiz_duraklar
-        if temiz_ad.startswith(aranan)
-    ]
-
-    if baslangicta_eslesenler:
-        return baslangicta_eslesenler[:10]
-
-    iceren_eslesenler = [
-        durak
-        for durak, temiz_ad in temiz_duraklar
-        if aranan in temiz_ad
-    ]
-
-    return iceren_eslesenler[:10]
-
 
 
 def dogrudan_hatlari_bul(baslangic_duraklari, hedef_duraklari):
@@ -272,7 +227,6 @@ def dogrudan_hatlari_bul(baslangic_duraklari, hedef_duraklari):
 
     return hatlar
 
-
 def tek_aktarmali_hatlari_bul(baslangic_duraklari, hedef_duraklari):
     baslangic_kodlari = list({durak[0] for durak in baslangic_duraklari})
     hedef_kodlari = list({durak[0] for durak in hedef_duraklari})
@@ -283,7 +237,7 @@ def tek_aktarmali_hatlari_bul(baslangic_duraklari, hedef_duraklari):
     with baglanti_ac() as baglanti:
         ham_secenekler = baglanti.execute(
             """
-            SELECT DISTINCT
+SELECT DISTINCT
                 h1.hat_kodu,
                 h1.hat_adi,
                 bas.yon,
@@ -315,8 +269,7 @@ def tek_aktarmali_hatlari_bul(baslangic_duraklari, hedef_duraklari):
 
                 (aktarma1.sira - bas.sira)
                 + (hedef.sira - aktarma2.sira) AS toplam_durak_araligi
-
-            FROM hat_duraklar AS bas
+FROM hat_duraklar AS bas
 
             JOIN hat_duraklar AS aktarma1
               ON aktarma1.hat_kodu = bas.hat_kodu
@@ -373,7 +326,8 @@ def tek_aktarmali_hatlari_bul(baslangic_duraklari, hedef_duraklari):
             (hedef_kodlari, baslangic_kodlari)
         ).fetchall()
 
-    # Aynı hat çifti ve aynı aktarma durağı bölgesine ait
+
+     # Aynı hat çifti ve aynı aktarma durağı bölgesine ait
     # farklı başlangıç durağı eşleşmelerini tek seçeneğe indir.
     tekil_secenekler = []
     gorulenler = set()
@@ -396,7 +350,6 @@ def tek_aktarmali_hatlari_bul(baslangic_duraklari, hedef_duraklari):
             break
 
     return tekil_secenekler
-
 
 def hat_duraklarini_getir(hat_kodu, yon, ilk_sira, son_sira):
     with baglanti_ac() as baglanti:
