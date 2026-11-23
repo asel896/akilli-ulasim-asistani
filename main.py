@@ -688,6 +688,40 @@ def dogal_dilden_rota(istek: DogalDilRotaIstegi):
             ),
         }
 
+    bas_kodlar = {
+        str(d["durak_kodu"])
+        for d in baslangic["durak_eslesmeleri"]
+    }
+    hedef_kodlar = {
+        str(d["durak_kodu"])
+        for d in hedef["durak_eslesmeleri"]
+    }
+
+    if bas_kodlar and bas_kodlar == hedef_kodlar:
+        tek_durak = len(bas_kodlar) == 1
+
+        return {
+            **ortak,
+            "basarili": tek_durak,
+            "sonuc_turu": (
+                "ayni_durak" if tek_durak
+                else "konum_secimi_gerekli"
+            ),
+            "secenekler": [],
+            "hatalar": [],
+            "mesaj": (
+                "Başlangıç ve hedef aynı durak; araç yolculuğu gerekmiyor."
+                if tek_durak
+                else (
+                    "Başlangıç ve hedef aynı durak adaylarıyla eşleşti. "
+                    "Hangi duraktan hangi durağa gitmek istediğini belirt."
+                )
+            ),
+            "islem_suresi_ms": round(
+                (perf_counter() - baslama) * 1000, 3
+            ),
+        }
+    
     satirlar = ()
 
     if any(
