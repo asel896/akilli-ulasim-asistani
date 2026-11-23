@@ -3,6 +3,7 @@ from typing import Literal
 from geocoding import adresi_koordinata_cevir, GeocodingError
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from rota_api import router as rota_router
 
 from adres_coz import (
     adresleri_coz,
@@ -21,6 +22,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.include_router(rota_router)
 
 class GeocodingRequest(BaseModel):
     adres: str
