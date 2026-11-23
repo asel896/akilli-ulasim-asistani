@@ -528,6 +528,17 @@ def koordinattan_rota(
                 }
             )
 
+    
+    if not secenekler:
+        return _koordinattan_aktarmali_rota(
+            istek,
+            response,
+            baslama,
+            ortak,
+            bas_adaylar,
+            hedef_adaylar,
+        )
+
     secenekler.sort(key=lambda secenek: secenek["_siralama"])
 
     bulunan_secenek_sayisi = len(secenekler)
@@ -554,5 +565,163 @@ def koordinattan_rota(
         "bilgi": (
             "Sefer saatleri ve aktarmalar "
             "bu uçta değerlendirilmez."
+        ),
+    }
+
+def _koordinattan_aktarmali_rota(
+    istek, response, baslama, ortak, bas_adaylar, hedef_adaylar
+):
+    from adres_coz import tek_aktarmali_hatlari_bul
+
+    def satira_cevir(adaylar):
+        return [
+            (
+                d["durak_kodu"],
+                d["durak_adi"],
+                d["enlem"],
+                d["boylam"],
+            )
+            for d in adaylar
+        ]
+
+    kayitlar = []
+    if bas_adaylar and hedef_adaylar:
+        kayitlar = tek_aktarmali_hatlari_bul(
+            satira_cevir(bas_adaylar),
+            satira_cevir(hedef_adaylar),
+        )
+
+    bas_sozluk = {d["durak_kodu"]: d for d in bas_adaylar}
+    hedef_sozluk = {d["durak_kodu"]: d for d in hedef_adaylar}
+    secenekler = []
+
+    for kayit in kayitlar:
+        (
+            hat1, ad1, yon1, bas_sira, akt1_sira,
+            bas_kod, akt1_kod, bas_ad,
+            hat2, ad2, yon2, akt2_sira, hedef_sira,
+            hedef_kod, akt1_ad, akt2_ad,
+            aktarma_mesafesi, durak_araligi,
+        ) = kayit
+
+        binis = dict(bas_sozluk[str(bas_kod)])
+        inis = dict(hedef_sozluk[str(hedef_kod)])
+        aktarma_mesafesi = float(aktarma_mesafesi)
+
+        toplam = (
+            binis["mesafe_metre"]
+            + inis["mesafe_metre"]
+            + aktarma_mesafesi
+        )
+
+        binis["mesafe_metre"] = round(binis["mesafe_metre"], 2)
+        inis["mesafe_metre"] = round(inis["mesafe_metre"], 2)
+
+        secenekler.append({
+            "binis_duragi": binis,
+            "inis_duragi": inis,
+            "birinci_hat": {
+                "hat_kodu": hat1,
+                "hat_adi": ad1,
+                "yon": yon1,
+                "binis_sirasi": bas_sira,
+                "inis_sirasi": akt1_sira,
+            },
+            "aktarma": {
+                "inilecek_durak": {
+                    "durak_kodu": str(akt1_kod),
+                    "durak_adi": akt1_ad,
+                },
+                "binilecek_durak": {
+                    "durak_adi": akt2_ad,
+                },
+                "yaklasik_mesafe_metre": round(aktarma_mesafesi, 2),
+            },
+            "ikinci_hat": {
+                "hat_kodu": hat2,
+                "hat_adi": ad2,
+                "yon": yon2,
+                "binis_sirasi": akt2_sira,
+                "inis_sirasi": hedef_sira,
+            },
+            "toplam_durak_araligi": durak_araligi,
+            "toplam_erisim_ve_aktarma_mesafesi_metre": round(toplam, 2),
+            "_siralama": (
+                toplam, durak_araligi,
+                hat1, yon1, hat2, yon2,
+                str(bas_kod), str(hedef_kod),
+                akt1_sira, akt2_sira,
+            ),
+        })
+
+
+    secenekler.sort(key=lambda s: s["_siralama"])
+    bulunan = len(secenekler)
+    secenekler = secenekler[:istek.sonuc_limiti]
+
+    
+    durak_onbellegi = {}
+
+    for secenek in secenekler:
+        ikinci = secenek["ikinci_hat"]
+        anahtar = (
+            ikinci["hat_kodu"],
+            ikinci["yon"],
+            ikinci["binis_sirasi"],
+        )
+
+        if anahtar not in durak_onbellegi:
+            satirlar = _sorgula(
+                """
+                SELECT hd.durak_kodu, d.durak_adi
+                FROM hat_duraklar AS hd
+                JOIN duraklar AS d
+                  ON d.durak_kodu = hd.durak_kodu
+                WHERE hd.hat_kodu = %s
+                  AND hd.yon = %s
+                  AND hd.sira = %s
+                """,
+                anahtar,
+            )
+
+            if len(satirlar) != 1:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Aktarma biniş durağı kesin olarak belirlenemedi.",
+                )
+
+            kod, ad = satirlar[0]
+            durak_onbellegi[anahtar] = {
+                "durak_kodu": str(kod),
+                "durak_adi": ad,
+            }
+
+        secenek["aktarma"]["binilecek_durak"] = dict(
+            durak_onbellegi[anahtar]
+        )
+        secenek.pop("_siralama")
+
+    return {
+        **ortak,
+        "siralama": (
+            "Önce doğrudan hat aranır. Bulunamazsa aktarmalı seçenekler "
+            "toplam kuş uçuşu erişim ve aktarma mesafesine, "
+            "ardından durak aralığına göre sıralanır."
+        ),
+        "basarili": bool(secenekler),
+        "sonuc_turu": "tek_aktarma" if secenekler else None,
+        "mesaj": (
+            "Tek aktarmalı seçenekler bulundu."
+            if secenekler else
+            "Arama sınırları içinde doğrudan veya tek aktarmalı seçenek bulunamadı."
+        ),
+        "bulunan_secenek_sayisi": bulunan,
+        "secenekler": secenekler,
+        "islem_suresi_ms": _sure(response, baslama),
+        "bilgi": (
+            "Mevcut aktarma aramasının aday ve sonuç sınırları geçerlidir. "
+            "Tüm olası rotaların bulunduğu garanti edilmez. "
+            "Mesafeler yaklaşık olup yürünebilir yol garantisi vermez. "
+            "Sefer saatlerinin birbirine uygunluğu hesaplanmaz."
         ),
     }
