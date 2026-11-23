@@ -562,3 +562,288 @@ def yol_tarifi(istek: YolTarifiIstegi):
         "sonuc_turu": "tek_aktarma",
         "secenekler": secenekler,
     }
+
+
+from time import perf_counter
+from pydantic import Field
+from rota_api import (
+    Koordinat,
+    _duraklari_yukle,
+    _koordinat_adaylari,
+)
+
+
+class DogalDilRotaIstegi(BaseModel):
+    soru: str = Field(min_length=1, max_length=1000)
+
+    baslangic_turu: Literal["otomatik", "durak", "adres"] = "otomatik"
+    hedef_turu: Literal["otomatik", "durak", "adres"] = "otomatik"
+
+    yaricap_metre: float = Field(
+        default=1000,
+        gt=0,
+        le=5000,
+        allow_inf_nan=False,
+    )
+
+    aday_limiti: int = Field(default=10, ge=1, le=50)
+    sonuc_limiti: int = Field(default=5, ge=1, le=50)
+
+
+def _rota_adaylarini_hazirla(konum, satirlar, istek):
+    if konum["cozum_turu"] == "durak_eslesmesi":
+        # Belirtilen durakları başka yakın duraklarla değiştirme.
+        adaylar = [
+            {
+                **durak,
+                "mesafe_metre": None,
+            }
+            for durak in konum["durak_eslesmeleri"]
+        ]
+
+        return adaylar, len(adaylar)
+
+    if konum["cozum_turu"] == "geocoding":
+        nokta = Koordinat(
+            enlem=konum["adres_koordinati"]["enlem"],
+            boylam=konum["adres_koordinati"]["boylam"],
+        )
+
+        return _koordinat_adaylari(
+            nokta,
+            satirlar,
+            istek.yaricap_metre,
+            istek.aday_limiti,
+        )
+
+    return [], 0
+
+
+@app.post(
+    "/rota/dogal-dil",
+    tags=["Backend ve Rota"],
+    summary="Doğal dildeki yolculuk isteğinden doğrudan rota bul",
+)
+def dogal_dilden_rota(istek: DogalDilRotaIstegi):
+    baslama = perf_counter()
+
+    if not istek.soru.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Soru boş olamaz.",
+        )
+
+    try:
+        yerler = adresleri_coz(istek.soru)
+    except Exception as hata:
+        kod = (
+            getattr(hata, "code", None)
+            or getattr(hata, "status_code", None)
+        )
+
+        if str(kod) == "429":
+            raise HTTPException(
+                status_code=429,
+                detail="Adres çözümleme servisi kullanım sınırına ulaştı.",
+            ) from hata
+
+        raise HTTPException(
+            status_code=503,
+            detail="Adres çözümleme servisine ulaşılamadı.",
+        ) from hata
+
+    baslangic, bas_hata = konumu_coz(
+        yerler.get("baslangic"),
+        istek.baslangic_turu,
+    )
+
+    hedef, hedef_hata = konumu_coz(
+        yerler.get("hedef"),
+        istek.hedef_turu,
+    )
+
+    hatalar = []
+
+    if bas_hata:
+        hatalar.append("Başlangıç: " + bas_hata)
+
+    if hedef_hata:
+        hatalar.append("Hedef: " + hedef_hata)
+
+    ortak = {
+        "baslangic": baslangic,
+        "hedef": hedef,
+    }
+
+    if hatalar:
+        return {
+            **ortak,
+            "basarili": False,
+            "sonuc_turu": None,
+            "secenekler": [],
+            "hatalar": hatalar,
+            "islem_suresi_ms": round(
+                (perf_counter() - baslama) * 1000,
+                3,
+            ),
+        }
+
+    satirlar = ()
+
+    if any(
+        konum["cozum_turu"] == "geocoding"
+        for konum in (baslangic, hedef)
+    ):
+        satirlar, _ = _duraklari_yukle()
+
+    bas_adaylar, bas_toplam = _rota_adaylarini_hazirla(
+        baslangic,
+        satirlar,
+        istek,
+    )
+
+    hedef_adaylar, hedef_toplam = _rota_adaylarini_hazirla(
+        hedef,
+        satirlar,
+        istek,
+    )
+
+    bas_sozluk = {
+        str(durak["durak_kodu"]): durak
+        for durak in bas_adaylar
+    }
+
+    hedef_sozluk = {
+        str(durak["durak_kodu"]): durak
+        for durak in hedef_adaylar
+    }
+
+    def satira_cevir(adaylar):
+        return [
+            (
+                str(durak["durak_kodu"]),
+                durak["durak_adi"],
+                durak["enlem"],
+                durak["boylam"],
+            )
+            for durak in adaylar
+        ]
+
+    hatlar = []
+
+    if bas_adaylar and hedef_adaylar:
+        hatlar = dogrudan_hatlari_bul(
+            satira_cevir(bas_adaylar),
+            satira_cevir(hedef_adaylar),
+        )
+
+    secenekler = []
+
+    for kayit in hatlar:
+        (
+            kod,
+            ad,
+            yon,
+            ilk,
+            son,
+            binis_kodu,
+            inis_kodu,
+            _,
+            _,
+            _,
+        ) = kayit
+
+        if str(binis_kodu) == str(inis_kodu):
+            continue
+
+        binis = dict(bas_sozluk[str(binis_kodu)])
+        inis = dict(hedef_sozluk[str(inis_kodu)])
+
+        # Durak belirtilmişse erişim mesafesi bilinmiyor.
+        # Sıralamada yalnız bilinen erişim mesafelerini kullan.
+        toplam = (
+            (binis["mesafe_metre"] or 0)
+            + (inis["mesafe_metre"] or 0)
+        )
+
+        toplam_biliniyor = all(
+            durak["mesafe_metre"] is not None
+            for durak in (binis, inis)
+        )
+
+        for durak in (binis, inis):
+            if durak["mesafe_metre"] is not None:
+                durak["mesafe_metre"] = round(
+                    durak["mesafe_metre"],
+                    2,
+                )
+
+        secenekler.append(
+            {
+                "hat_kodu": kod,
+                "hat_adi": ad,
+                "yon": yon,
+                "binis_duragi": binis,
+                "inis_duragi": inis,
+                "binis_sirasi": ilk,
+                "inis_sirasi": son,
+                "durak_araligi": son - ilk,
+                "toplam_erisim_mesafesi_metre": (
+                    round(toplam, 2)
+                    if toplam_biliniyor
+                    else None
+                ),
+                "_sira": (
+                    toplam,
+                    son - ilk,
+                    kod,
+                    yon,
+                    str(binis_kodu),
+                    str(inis_kodu),
+                    ilk,
+                    son,
+                ),
+            }
+        )
+
+    secenekler.sort(key=lambda secenek: secenek["_sira"])
+
+    bulunan = len(secenekler)
+    secenekler = secenekler[:istek.sonuc_limiti]
+
+    for secenek in secenekler:
+        secenek.pop("_sira")
+
+    return {
+        **ortak,
+        "basarili": bool(secenekler),
+        "sonuc_turu": "dogrudan" if secenekler else None,
+        "baslangic_aday_sayisi": len(bas_adaylar),
+        "hedef_aday_sayisi": len(hedef_adaylar),
+        "adaylar_kisitlandi": (
+            bas_toplam > len(bas_adaylar)
+            or hedef_toplam > len(hedef_adaylar)
+        ),
+        "bulunan_secenek_sayisi": bulunan,
+        "secenekler": secenekler,
+        "hatalar": [],
+        "mesaj": (
+            "Doğrudan hat bulundu."
+            if secenekler
+            else (
+                "Seçilen durak adayları arasında "
+                "doğrudan hat bulunamadı."
+            )
+        ),
+        "bilgi": (
+            "Yalnız doğrudan hatlar aranır; "
+            "sefer saatleri değerlendirilmez. "
+            "Mesafe, adres koordinatı varsa kuş uçuşudur. "
+            "Durak belirtilmişse kullanıcının durağa uzaklığı "
+            "bilinmediğinden null gösterilir."
+        ),
+        "islem_suresi_ms": round(
+            (perf_counter() - baslama) * 1000,
+            3,
+        ),
+    }
