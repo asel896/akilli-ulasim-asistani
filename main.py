@@ -592,7 +592,7 @@ class DogalDilRotaIstegi(BaseModel):
 
 def _rota_adaylarini_hazirla(konum, satirlar, istek):
     if konum["cozum_turu"] == "durak_eslesmesi":
-        # Belirtilen durakları başka yakın duraklarla değiştirme.
+        
         adaylar = [
             {
                 **durak,
@@ -729,12 +729,23 @@ def dogal_dilden_rota(istek: DogalDilRotaIstegi):
             for durak in adaylar
         ]
 
-    hatlar = []
+        hatlar = []
 
     if bas_adaylar and hedef_adaylar:
         hatlar = dogrudan_hatlari_bul(
             satira_cevir(bas_adaylar),
             satira_cevir(hedef_adaylar),
+        )
+
+    if not hatlar:
+        return _dogal_dil_aktarmali_sonuc(
+            ortak,
+            bas_adaylar,
+            hedef_adaylar,
+            bas_toplam,
+            hedef_toplam,
+            istek,
+            baslama,
         )
 
     secenekler = []
@@ -759,8 +770,6 @@ def dogal_dilden_rota(istek: DogalDilRotaIstegi):
         binis = dict(bas_sozluk[str(binis_kodu)])
         inis = dict(hedef_sozluk[str(inis_kodu)])
 
-        # Durak belirtilmişse erişim mesafesi bilinmiyor.
-        # Sıralamada yalnız bilinen erişim mesafelerini kullan.
         toplam = (
             (binis["mesafe_metre"] or 0)
             + (inis["mesafe_metre"] or 0)
@@ -846,4 +855,196 @@ def dogal_dilden_rota(istek: DogalDilRotaIstegi):
             (perf_counter() - baslama) * 1000,
             3,
         ),
+    }
+
+def _dogal_dil_aktarmali_sonuc(
+    ortak,
+    bas_adaylar,
+    hedef_adaylar,
+    bas_toplam,
+    hedef_toplam,
+    istek,
+    baslama,
+):
+    bas_sozluk = {
+        str(d["durak_kodu"]): d
+        for d in bas_adaylar
+    }
+    hedef_sozluk = {
+        str(d["durak_kodu"]): d
+        for d in hedef_adaylar
+    }
+
+    def satirlar(adaylar):
+        return [
+            (
+                str(d["durak_kodu"]),
+                d["durak_adi"],
+                d["enlem"],
+                d["boylam"],
+            )
+            for d in adaylar
+        ]
+
+    hatlar = []
+
+    if bas_adaylar and hedef_adaylar:
+        hatlar = tek_aktarmali_hatlari_bul(
+            satirlar(bas_adaylar),
+            satirlar(hedef_adaylar),
+        )
+
+    secenekler = []
+
+    for kayit in hatlar:
+        (
+            hat1,
+            ad1,
+            yon1,
+            bas_sira,
+            akt1_sira,
+            bas_kod,
+            akt1_kod,
+            bas_ad,
+            hat2,
+            ad2,
+            yon2,
+            akt2_sira,
+            hedef_sira,
+            hedef_kod,
+            akt1_ad,
+            akt2_ad,
+            aktarma_mesafesi,
+            durak_araligi,
+        ) = kayit
+
+        binis = dict(bas_sozluk[str(bas_kod)])
+        inis = dict(hedef_sozluk[str(hedef_kod)])
+
+        aktarma_mesafesi = float(aktarma_mesafesi)
+
+        bilinen_mesafe = (
+            (binis["mesafe_metre"] or 0)
+            + (inis["mesafe_metre"] or 0)
+            + aktarma_mesafesi
+        )
+
+        tumu_biliniyor = all(
+            d["mesafe_metre"] is not None
+            for d in (binis, inis)
+        )
+
+        for durak in (binis, inis):
+            if durak["mesafe_metre"] is not None:
+                durak["mesafe_metre"] = round(
+                    durak["mesafe_metre"], 2
+                )
+
+        secenekler.append(
+            {
+                "binis_duragi": binis,
+                "inis_duragi": inis,
+                "birinci_hat": {
+                    "hat_kodu": hat1,
+                    "hat_adi": ad1,
+                    "yon": yon1,
+                    "binis_sirasi": bas_sira,
+                    "inis_sirasi": akt1_sira,
+                },
+                "aktarma": {
+                    "inilecek_durak": {
+                        "durak_kodu": str(akt1_kod),
+                        "durak_adi": akt1_ad,
+                    },
+                "binilecek_durak": _aktarma_binis_duragini_getir(
+                    hat2, yon2, akt2_sira
+                    ),
+                    "yaklasik_mesafe_metre": round(
+                        aktarma_mesafesi, 2
+                    ),
+                },
+                "ikinci_hat": {
+                    "hat_kodu": hat2,
+                    "hat_adi": ad2,
+                    "yon": yon2,
+                    "binis_sirasi": akt2_sira,
+                    "inis_sirasi": hedef_sira,
+                },
+                "toplam_durak_araligi": durak_araligi,
+                "toplam_erisim_ve_aktarma_mesafesi_metre": (
+                    round(bilinen_mesafe, 2)
+                    if tumu_biliniyor
+                    else None
+                ),
+                "_sira": (
+                    bilinen_mesafe,
+                    durak_araligi,
+                    hat1,
+                    yon1,
+                    hat2,
+                    yon2,
+                ),
+            }
+        )
+
+    secenekler.sort(key=lambda s: s["_sira"])
+
+    bulunan = len(secenekler)
+    secenekler = secenekler[:istek.sonuc_limiti]
+
+    for secenek in secenekler:
+        secenek.pop("_sira")
+
+    return {
+        **ortak,
+        "basarili": bool(secenekler),
+        "sonuc_turu": (
+            "tek_aktarma" if secenekler else None
+        ),
+        "baslangic_aday_sayisi": len(bas_adaylar),
+        "hedef_aday_sayisi": len(hedef_adaylar),
+        "adaylar_kisitlandi": (
+            bas_toplam > len(bas_adaylar)
+            or hedef_toplam > len(hedef_adaylar)
+        ),
+        "bulunan_secenek_sayisi": bulunan,
+        "secenekler": secenekler,
+        "hatalar": [],
+        "mesaj": (
+            "Tek aktarmalı seçenek bulundu."
+            if secenekler
+            else (
+                "Arama sınırları içinde doğrudan veya "
+                "tek aktarmalı seçenek bulunamadı."
+            )
+        ),
+        "bilgi": (
+            "Mevcut aktarma aramasının aday ve sonuç "
+            "sınırları geçerlidir. Mesafeler yaklaşık "
+            "olup yürünebilir yol garantisi vermez. "
+            "Sefer saatlerinin birbirine uygunluğu "
+            "hesaplanmaz."
+        ),
+        "islem_suresi_ms": round(
+            (perf_counter() - baslama) * 1000,
+            3,
+        ),
+    }
+
+def _aktarma_binis_duragini_getir(hat_kodu, yon, sira):
+    duraklar = hat_duraklarini_getir(
+        hat_kodu, yon, sira, sira
+    )
+
+    if len(duraklar) != 1:
+        raise HTTPException(
+            status_code=503,
+            detail="Aktarma biniş durağı veritabanından kesin olarak belirlenemedi."
+        )
+
+    _, durak_kodu, durak_adi = duraklar[0]
+
+    return {
+        "durak_kodu": str(durak_kodu),
+        "durak_adi": durak_adi,
     }
