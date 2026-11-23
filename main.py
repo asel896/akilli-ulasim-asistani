@@ -4,6 +4,7 @@ from geocoding import adresi_koordinata_cevir, GeocodingError
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from rota_api import router as rota_router
+from db import baglanti_ac
 
 from adres_coz import (
     adresleri_coz,
@@ -224,6 +225,60 @@ def konumu_coz(yer, tercih="otomatik"):
         sonuc["cozum_turu"] = "yetersiz_bilgi"
         return sonuc, "Yer çok genel. Cadde, mahalle veya durak adı belirt."
 
+        # Açıkça belirtilen durak kodunu ad eşleştirmesinden önce ara.
+    kod_eslesmesi = re.search(
+        r"(?<!\w)([0-9]{5})\s+kodlu\b",
+        str(yer),
+        flags=re.IGNORECASE,
+    )
+
+    if kod_eslesmesi is None:
+        kod_eslesmesi = re.fullmatch(
+            r"\s*([0-9]{5})\s*",
+            str(yer),
+        )
+
+    if tur != "adres" and kod_eslesmesi:
+        durak_kodu = kod_eslesmesi.group(1)
+
+        try:
+            with baglanti_ac() as baglanti:
+                kayit = baglanti.execute(
+                    """
+                    SELECT durak_kodu, durak_adi, enlem, boylam
+                    FROM duraklar
+                    WHERE durak_kodu = %s
+                    """,
+                    (durak_kodu,),
+                ).fetchone()
+        except Exception as hata:
+            raise HTTPException(
+                status_code=503,
+                detail="Durak kodu sorgulanırken veritabanına ulaşılamadı.",
+            ) from hata
+
+        sonuc["konum_turu"] = "durak"
+
+        if kayit is None:
+            return sonuc, f"{durak_kodu} kodlu durak bulunamadı."
+
+        kod, ad, enlem, boylam = kayit
+
+        sonuc["durak_eslesmeleri"] = [
+            {
+                "durak_kodu": str(kod),
+                "durak_adi": ad,
+                "enlem": float(enlem) if enlem is not None else None,
+                "boylam": float(boylam) if boylam is not None else None,
+                "eslesme_turu": "kod",
+            }
+        ]
+        sonuc["eslesme_sayisi"] = 1
+        sonuc["birden_fazla_eslesme"] = False
+        sonuc["cozum_turu"] = "durak_eslesmesi"
+
+        return sonuc, None
+    
     duraklar = durak_eslesmelerini_jsona_cevir(durak_ara(yer), yer)
     if tur == "adres":
        
