@@ -397,175 +397,66 @@ def koordinattan_rota(
     istek: KoordinatRotaIstegi,
     response: Response,
 ):
-    baslama = time.perf_counter()
+    from rota_motoru import adaylari_bul, rota_bul
 
+    baslama = time.perf_counter()
     satirlar, onbellekten = _duraklari_yukle()
 
-    bas_adaylar, bas_sayi = _koordinat_adaylari(
-        istek.baslangic,
-        satirlar,
-        istek.yaricap_metre,
-        istek.aday_limiti,
-    )
-
-    hedef_adaylar, hedef_sayi = _koordinat_adaylari(
-        istek.hedef,
-        satirlar,
-        istek.yaricap_metre,
-        istek.aday_limiti,
-    )
-
-    ortak = {
-        "baslangic_yaricapindaki_durak": bas_sayi,
-        "hedef_yaricapindaki_durak": hedef_sayi,
-        "baslangic_aday_sayisi": len(bas_adaylar),
-        "hedef_aday_sayisi": len(hedef_adaylar),
-        "adaylar_kisitlandi": (
-            bas_sayi > len(bas_adaylar)
-            or hedef_sayi > len(hedef_adaylar)
-        ),
-        "onbellekten": onbellekten,
-        "mesafe_notu": (
-            "Mesafeler kuş uçuşudur; "
-            "yürünebilir yol mesafesi değildir."
-        ),
-        "siralama": (
-            "Toplam kuş uçuşu erişim mesafesi, "
-            "ardından durak aralığı."
-        ),
-    }
-
-    secenekler = []
-
-    if bas_adaylar and hedef_adaylar:
-        bas_sozluk = {
-            durak["durak_kodu"]: durak
-            for durak in bas_adaylar
+    def konum(nokta):
+        return {
+            "cozum_turu": "geocoding",
+            "adres_koordinati": {
+                "enlem": nokta.enlem,
+                "boylam": nokta.boylam,
+            },
         }
 
-        hedef_sozluk = {
-            durak["durak_kodu"]: durak
-            for durak in hedef_adaylar
-        }
+    bas = adaylari_bul(
+        konum(istek.baslangic),
+        satirlar,
+        istek.yaricap_metre,
+    )
+    hedef = adaylari_bul(
+        konum(istek.hedef),
+        satirlar,
+        istek.yaricap_metre,
+    )
 
-        satirlar = _sorgula(
-            """
-            SELECT DISTINCT
-                h.hat_kodu,
-                h.hat_adi,
-                b.yon,
-                b.durak_kodu,
-                i.durak_kodu,
-                b.sira,
-                i.sira
-            FROM hat_duraklar AS b
-            JOIN hat_duraklar AS i
-              ON i.hat_kodu = b.hat_kodu
-             AND i.yon = b.yon
-             AND i.sira > b.sira
-            JOIN hatlar AS h
-              ON h.hat_kodu = b.hat_kodu
-            WHERE b.durak_kodu = ANY(%s::varchar[])
-              AND i.durak_kodu = ANY(%s::varchar[])
-              AND b.durak_kodu <> i.durak_kodu
-              AND h.hizmet_turu IS DISTINCT FROM 'gorevli'
-            """,
-            (
-                list(bas_sozluk),
-                list(hedef_sozluk),
+    ayni = (
+        istek.baslangic.enlem == istek.hedef.enlem
+        and istek.baslangic.boylam == istek.hedef.boylam
+    )
+
+    if ayni:
+        sonuc = {
+            "basarili": True,
+            "sonuc_turu": "ayni_konum",
+            "secenekler": [],
+            "bulunan_secenek_sayisi": 0,
+            "mesaj": (
+                "Başlangıç ve hedef aynı koordinat; "
+                "araç yolculuğu gerekmiyor."
             ),
+        }
+    else:
+        sonuc = rota_bul(
+            bas,
+            hedef,
+            istek.sonuc_limiti,
         )
-
-        for (
-            kod,
-            ad,
-            yon,
-            binis_kodu,
-            inis_kodu,
-            binis_sirasi,
-            inis_sirasi,
-        ) in satirlar:
-            binis = dict(bas_sozluk[str(binis_kodu)])
-            inis = dict(hedef_sozluk[str(inis_kodu)])
-
-            toplam_mesafe = (
-                binis["mesafe_metre"]
-                + inis["mesafe_metre"]
-            )
-
-            binis["mesafe_metre"] = round(
-                binis["mesafe_metre"], 2
-            )
-            inis["mesafe_metre"] = round(
-                inis["mesafe_metre"], 2
-            )
-
-            durak_araligi = inis_sirasi - binis_sirasi
-
-            secenekler.append(
-                {
-                    "hat_kodu": kod,
-                    "hat_adi": ad,
-                    "yon": yon,
-                    "binis_duragi": binis,
-                    "inis_duragi": inis,
-                    "binis_sirasi": binis_sirasi,
-                    "inis_sirasi": inis_sirasi,
-                    "durak_araligi": durak_araligi,
-                    "toplam_erisim_mesafesi_metre": round(
-                        toplam_mesafe, 2
-                    ),
-                    "_siralama": (
-                        toplam_mesafe,
-                        durak_araligi,
-                        kod,
-                        yon,
-                        str(binis_kodu),
-                        str(inis_kodu),
-                        binis_sirasi,
-                        inis_sirasi,
-                    ),
-                }
-            )
-
-    
-    if not secenekler:
-        return _koordinattan_aktarmali_rota(
-            istek,
-            response,
-            baslama,
-            ortak,
-            bas_adaylar,
-            hedef_adaylar,
-        )
-
-    secenekler.sort(key=lambda secenek: secenek["_siralama"])
-
-    bulunan_secenek_sayisi = len(secenekler)
-    secenekler = secenekler[:istek.sonuc_limiti]
-
-    for secenek in secenekler:
-        secenek.pop("_siralama")
 
     return {
-        **ortak,
-        "basarili": bool(secenekler),
-        "sonuc_turu": "dogrudan" if secenekler else None,
-        "mesaj": (
-            "Doğrudan hat seçenekleri bulundu."
-            if secenekler
-            else (
-                "Seçilen yarıçap ve aday sınırlarında "
-                "doğrudan hat bulunamadı."
-            )
+        **sonuc,
+        "baslangic_yaricapindaki_durak": len(bas),
+        "hedef_yaricapindaki_durak": len(hedef),
+        "baslangic_aday_sayisi": len(bas),
+        "hedef_aday_sayisi": len(hedef),
+        "adaylar_kisitlandi": False,
+        "onbellekten": onbellekten,
+        "mesafe_notu": (
+            "Mesafeler kuş uçuşudur; yürünebilir yol değildir."
         ),
-        "bulunan_secenek_sayisi": bulunan_secenek_sayisi,
-        "secenekler": secenekler,
         "islem_suresi_ms": _sure(response, baslama),
-        "bilgi": (
-            "Sefer saatleri ve aktarmalar "
-            "bu uçta değerlendirilmez."
-        ),
     }
 
 def _koordinattan_aktarmali_rota(

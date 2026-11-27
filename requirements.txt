@@ -7,3 +7,5 @@ python-dotenv
 google-genai
 
 fastapi[standard]
+
+shapely>=2,<3

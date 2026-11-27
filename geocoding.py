@@ -13,6 +13,7 @@ import requests
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = "AkilliUlasimAsistani/1.1 (student project)"
+
 _request_lock = Lock()
 _last_request_at = 0.0
 
@@ -71,9 +72,16 @@ def _http_ara(parametreler):
         try:
             cevap = requests.get(
                 NOMINATIM_URL,
-                params={**parametreler, "format": "jsonv2", "limit": 5,
-                        "countrycodes": "tr", "addressdetails": 1,
-                        "namedetails": 1, "accept-language": "tr"},
+                params={
+                    **parametreler,
+                    "format": "jsonv2",
+                    "limit": 5,
+                    "countrycodes": "tr",
+                    "addressdetails": 1,
+                    "namedetails": 1,
+                    "polygon_geojson": 1,
+                    "accept-language": "tr",
+                },
                 headers={"User-Agent": USER_AGENT}, timeout=15,
             )
             cevap.raise_for_status()
@@ -90,33 +98,135 @@ def _http_ara(parametreler):
 def _uygun_sonuc(sonuc):
     if not isinstance(sonuc, dict):
         return None
+
     adres = sonuc.get("address")
-    if not isinstance(adres, dict) or adres.get("country_code") != "tr":
+
+    if not isinstance(adres, dict):
         return None
 
-    
-    if not any(_temizle(str(adres.get(k, ""))) in ("malatya", "malatya ili")
-               for k in ("state", "province")):
+    if str(adres.get("country_code", "")).lower() != "tr":
         return None
-   
-    if sonuc.get("addresstype") in {
-        "country", "state", "region", "county", "city", "town",
-        "village", "municipality", "suburb", "quarter", "neighbourhood",
-    } or sonuc.get("class") == "boundary":
+
+    if not any(
+        _temizle(str(adres.get(k, "")))
+        in ("malatya", "malatya ili")
+        for k in ("state", "province")
+    ):
         return None
+
+    kategori = (
+        sonuc.get("category")
+        or sonuc.get("class")
+    )
+
+    if (
+        kategori == "boundary"
+        or sonuc.get("addresstype") in {
+            "country",
+            "state",
+            "region",
+            "county",
+            "city",
+            "town",
+            "village",
+            "municipality",
+            "suburb",
+            "quarter",
+            "neighbourhood",
+        }
+    ):
+        return None
+
     try:
-        enlem, boylam = float(sonuc["lat"]), float(sonuc["lon"])
-        if not (math.isfinite(enlem) and math.isfinite(boylam)
-                and -90 <= enlem <= 90 and -180 <= boylam <= 180):
-            raise ValueError("Koordinat aralık dışında.")
-    except (KeyError, ValueError, TypeError) as hata:
-        raise GeocodingError("Adres servisi geçerli koordinat döndürmedi.") from hata
+        enlem = float(sonuc["lat"])
+        boylam = float(sonuc["lon"])
+    except (
+        KeyError,
+        ValueError,
+        TypeError,
+        OverflowError,
+    ):
+        return None
+
+    if not (
+        math.isfinite(enlem)
+        and math.isfinite(boylam)
+        and -90 <= enlem <= 90
+        and -180 <= boylam <= 180
+    ):
+        return None
+
     return {
-        "enlem": enlem, "boylam": boylam,
+        "enlem": enlem,
+        "boylam": boylam,
         "bulunan_adres": sonuc.get("display_name", ""),
         "kaynak": "OpenStreetMap Nominatim",
         "atif": "© OpenStreetMap contributors",
+        "alan_geojson": sonuc.get("geojson"),
+        "osm_turu": sonuc.get("osm_type"),
+        "osm_kimligi": sonuc.get("osm_id"),
     }
+
+
+def _ad_eslesiyor(adres, aday):
+    aranan = _temizle(adres.split(",")[0])
+
+    if not aranan:
+        return False
+
+    adlar = [
+        aday.get("name"),
+        str(aday.get("display_name", "")).split(",")[0],
+    ]
+
+    detay = aday.get("namedetails")
+
+    if isinstance(detay, dict):
+        adlar.extend(
+            deger
+            for anahtar, deger in detay.items()
+            if (
+                anahtar in {
+                    "name",
+                    "official_name",
+                    "short_name",
+                    "alt_name",
+                    "loc_name",
+                }
+                or anahtar.startswith("name:")
+            )
+        )
+
+    for deger in adlar:
+        if not isinstance(deger, str):
+            continue
+
+        for ad in deger.split(";"):
+            temiz = _temizle(ad)
+
+            if re.findall(r"\d+", aranan) != re.findall(
+                r"\d+", temiz
+            ):
+                continue
+
+            parcalar = temiz.split()
+
+            if any(
+                "".join(parcalar[:i])
+                == aranan.replace(" ", "")
+                for i in range(1, len(parcalar) + 1)
+            ):
+                return True
+
+            kelimeler = iter(parcalar)
+
+            if all(
+                any(x == y for y in kelimeler)
+                for x in aranan.split()
+            ):
+                return True
+
+    return False
 
 
 @lru_cache(maxsize=256)
@@ -124,8 +234,18 @@ def _geocode_cached(adres: str) -> dict[str, Any] | None:
     for sorgu in _sorgular(adres):
         for aday in _http_ara(sorgu):
             uygun = _uygun_sonuc(aday)
-            if uygun is not None:
-                return {**uygun, "arama_sorgusu": dict(sorgu)}
+
+            if uygun is None:
+                continue
+
+            if not _ad_eslesiyor(adres, aday):
+                continue
+
+            return {
+                **uygun,
+                "arama_sorgusu": dict(sorgu),
+            }
+
     return None
 
 
